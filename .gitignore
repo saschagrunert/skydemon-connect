@@ -1,0 +1,10 @@
+build/
+/skydemon-connect
+*.exe
+SkyDemonConnect.log
+*.test
+*.out
+*.prof
+go.work
+go.work.sum
+*.syso

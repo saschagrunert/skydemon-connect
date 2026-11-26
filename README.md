@@ -1,0 +1,156 @@
+# SkyDemonConnect
+
+[![ci](https://github.com/saschagrunert/skydemon-connect/actions/workflows/ci.yml/badge.svg)](https://github.com/saschagrunert/skydemon-connect/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/saschagrunert/skydemon-connect/graph/badge.svg)](https://codecov.io/gh/saschagrunert/skydemon-connect)
+
+Smooth moving map for [SkyDemon](https://www.skydemon.aero) in Microsoft
+Flight Simulator 2024 (MSFS). Simulator bridges usually send one position
+per second, so the aircraft jumps; SkyDemonConnect sends 30 per second, to
+SkyDemon on the same PC and to tablets and phones on your network. It is a
+single `.exe` in the system tray that can start and stop with MSFS.
+
+## Quick start
+
+1. Close any other simulator bridge, so that SkyDemon gets one feed only.
+2. Download `SkyDemonConnect-<version>.zip` from the
+   [releases](https://github.com/saschagrunert/skydemon-connect/releases) and
+   extract it (right-click → Extract All) to a folder of its own, e.g.
+   `C:\Tools\SkyDemonConnect\`, not into Downloads. It contains
+   `SimConnect.dll` from the MSFS 2024 SDK; see [NOTICE.md](NOTICE.md).
+3. Start `SkyDemonConnect.exe`. It is not signed, so SmartScreen asks first
+   (More info → Run anyway; or right-click the zip → Properties → Unblock
+   before extracting). Smart App Control on Windows 11 blocks unsigned apps;
+   the only way around it is to turn it off (Windows Security → App & browser
+   control). If Windows Firewall asks, either answer works: SkyDemonConnect
+   only sends.
+4. In SkyDemon, on the PC or a tablet: **Go Flying → Connect to X-Plane**.
+
+`.\SkyDemonConnect.exe -demo` flies a circle without MSFS, to test the
+connection; quit the tray copy first, as only one runs at a time.
+
+To update, choose **Quit**, extract the new zip into the same folder and
+replace the files; if you extract it elsewhere, tick **Start with MSFS** again
+from the new copy.
+
+To uninstall, untick **Start with MSFS** (if it is unticked already, tick it
+first: unticking removes every SkyDemonConnect entry, also one from an older
+copy or with other options), choose **Quit** and delete the folder; the
+backup `exe.xml.bak-skydemonconnect` next to MSFS's `exe.xml` and
+`%LOCALAPPDATA%\SkyDemonConnect` (if it exists) can go too.
+
+## Tray icon
+
+| Icon | Meaning                                                     |
+| ---- | ----------------------------------------------------------- |
+| 🟢   | sending positions; hover for altitude, speed and track      |
+| ⚪   | waiting for MSFS: not running, loading or in its menu       |
+| 🔴   | a problem, e.g. `SimConnect.dll` missing; hover for details |
+
+The menu has **Start with MSFS**, **Open log** and **Quit**. Only one copy
+runs at a time. Each start writes a fresh `SkyDemonConnect.log` next to the
+exe (or in `%LOCALAPPDATA%\SkyDemonConnect` if that folder is read-only) and
+keeps the previous one as `SkyDemonConnect.previous.log`; `-console` writes
+none. While MSFS is paused, the last position keeps being sent, standing
+still after two seconds. In MSFS's menus no position is sent and SkyDemon
+shows the GPS as lost.
+
+**Start with MSFS** adds the exe to MSFS's `exe.xml` (Microsoft Store and
+Steam), so that MSFS starts it and it quits with MSFS. It passes on the
+options this copy was started with, e.g. `-udp`. The original file is backed
+up once to `exe.xml.bak-skydemonconnect`. After moving the exe or to change
+the options, start it the new way: the menu item is unticked until you tick
+it again. To add it by hand, put this inside `<SimBase.Document>` of
+`%LOCALAPPDATA%\Packages\Microsoft.Limitless_8wekyb3d8bbwe\LocalCache\exe.xml`
+(Store) or `%APPDATA%\Microsoft Flight Simulator 2024\exe.xml` (Steam):
+
+```xml
+<Launch.Addon>
+  <Name>SkyDemonConnect</Name>
+  <Disabled>False</Disabled>
+  <Path>C:\Tools\SkyDemonConnect\SkyDemonConnect.exe</Path>
+  <CommandLine>-auto</CommandLine>
+</Launch.Addon>
+```
+
+## Options
+
+Add options in PowerShell (`.\SkyDemonConnect.exe -demo`) or to a shortcut's
+target; `-help` lists them. Quote comma-separated lists in PowerShell, e.g.
+`-udp "auto,192.168.1.23:49002"`.
+
+| Option      | Default | Meaning                                                              |
+| ----------- | ------- | -------------------------------------------------------------------- |
+| `-udp`      | `auto`  | comma-separated `host:port` targets; `auto` is this PC and every local network; `-udp=` turns UDP off (with `-com`) |
+| `-com`      |         | also write NMEA (RMC, GGA, GSA) to a COM port                        |
+| `-baud`     | 115200  | COM port baud rate                                                   |
+| `-no-xatt`  | off     | don't send attitude messages                                         |
+| `-name`     | MSFS    | simulator name in the messages, up to 32 ASCII characters, no commas |
+| `-demo`     | off     | fly a 100 kt circle without MSFS                                     |
+| `-demo-lat` | 51.4239 | centre of the demo circle (Leipzig/Halle)                            |
+| `-demo-lon` | 12.2364 |                                                                      |
+| `-console`  | off     | a console window with a live status line instead of the tray         |
+| `-quiet`    | off     | with `-console`: no status line                                      |
+| `-auto`     | off     | as used in `exe.xml`: start silently, exit when MSFS closes          |
+| `-version`  |         | show the version                                                     |
+
+`-com` is for apps that read a GPS from a serial port: create a virtual
+null-modem pair, e.g. COM11 and COM12 with
+[com0com](https://com0com.sourceforge.net), run `-com COM11` and point the
+app at COM12. A port that isn't there yet, e.g. a USB adapter, is opened
+once it is. In PowerShell 5.1, write `-udp=` rather than `-udp ""`, which it
+drops.
+
+`auto` sends to each network's broadcast address (e.g. `192.168.1.255`) and
+follows network changes. Host names such as `ipad.local:49002` are looked up
+again every 10 seconds.
+
+## Troubleshooting
+
+**Open log** shows where positions go and what happened with MSFS; attach
+`SkyDemonConnect.log` when reporting a problem.
+
+- **`SimConnect.dll` not found:** keep it next to the exe, as in the zip, and
+  don't run the exe from inside the zip. It is also found in the SDK folder
+  named by `MSFS2024_SDK` or `MSFS_SDK`, and in `C:\MSFS 2024 SDK` or
+  `C:\MSFS SDK`. If the log says it can't be loaded, install the Microsoft
+  Visual C++ runtime (`vc_redist.x64.exe`), or replace a 32-bit copy from FSX
+  with the MSFS 2024 one.
+- **The tablet gets nothing:** it must be on the same network as the PC, not
+  a guest Wi-Fi, and without a VPN in the way. Some routers don't pass
+  broadcasts to Wi-Fi: send to the tablet directly, e.g.
+  `-udp "auto,192.168.1.23:49002"`.
+- **The icon stays grey in a flight:** see **Open log**. If MSFS runs as
+  administrator, use **Start with MSFS**, so that MSFS starts it the same way.
+- **The map still jumps:** another simulator bridge is still running.
+
+## How it works
+
+SkyDemonConnect loads `SimConnect.dll` at runtime (no cgo) and reads the user
+aircraft on every MSFS frame. Thirty times a second it sends the newest
+position as
+[ForeFlight simulator messages](https://foreflight.com/support/network-gps)
+(`XGPS` and `XATT` on UDP port 49002) and, with `-com`, as NMEA sentences.
+The track is the ground track, including wind drift; all directions are
+true.
+
+## Development
+
+The exe is cross-compiled with Go from any OS. `make help` lists the targets,
+e.g. `make build`, `make test`, `make lint` and `make demo`. `make test` uses
+the race detector, which needs a C compiler (`make test RACE=` without);
+`make lint` needs curl and tar; `make bundle` builds the release zip,
+downloading the 650 MB MSFS SDK installer, and needs curl, unzip, python3
+and `msiextract` from msitools.
+
+Pushing a `v*` tag on `main` runs CI and publishes a release with
+`SHA256SUMS` and build provenance, which
+`gh attestation verify SkyDemonConnect.exe -R saschagrunert/skydemon-connect`
+checks. A tag like `v1.2.0-rc.1` makes a pre-release, to try the release
+first. To bump the MSFS SDK, golangci-lint or Go, see the comments at the top
+of the Makefile and in `.github/workflows/ci.yml`; Dependabot covers the
+actions, go-winres and govulncheck.
+
+## License
+
+[Apache License 2.0](LICENSE). SkyDemonConnect is not affiliated with or
+endorsed by SkyDemon (Divelements Ltd), ForeFlight or Microsoft.

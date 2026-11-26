@@ -1,0 +1,241 @@
+---
+version: "2"
+linters:
+  # Every linter is listed, so that the config says what runs. When a
+  # golangci-lint bump adds linters, add them here (golangci-lint linters
+  # lists them). goheader has no template: the files carry no license
+  # header. Left out: the deprecated gomodguard, wsl and exhaustruct,
+  # replaced by gomodguard_v2, wsl_v5 and exhaustruct_v5.
+  default: none
+  enable:
+    - arangolint
+    - asasalint
+    - asciicheck
+    - bidichk
+    - bodyclose
+    - canonicalheader
+    - clickhouselint
+    - containedctx
+    - contextcheck
+    - copyloopvar
+    - cyclop
+    - decorder
+    - depguard
+    - dogsled
+    - dupl
+    - dupword
+    - durationcheck
+    - embeddedstructfieldcheck
+    - err113
+    - errcheck
+    - errchkjson
+    - errname
+    - errorlint
+    - exhaustive
+    - exhaustruct_v5
+    - exptostd
+    - fatcontext
+    - forbidigo
+    - forcetypeassert
+    - funcorder
+    - funlen
+    - ginkgolinter
+    - gocheckcompilerdirectives
+    - gochecknoglobals
+    - gochecknoinits
+    - gochecksumtype
+    - gocognit
+    - goconst
+    - gocritic
+    - gocyclo
+    - godoclint
+    - godot
+    - godox
+    - goheader
+    - gomoddirectives
+    - gomodguard_v2
+    - goprintffuncname
+    - gosec
+    - gosmopolitan
+    - govet
+    - grouper
+    - iface
+    - importas
+    - inamedparam
+    - ineffassign
+    - interfacebloat
+    - intrange
+    - iotamixing
+    - ireturn
+    - lll
+    - loggercheck
+    - maintidx
+    - makezero
+    - mirror
+    - misspell
+    - mnd
+    - modernize
+    - musttag
+    - nakedret
+    - nestif
+    - nilerr
+    - nilnesserr
+    - nilnil
+    - nlreturn
+    - noctx
+    - noinlineerr
+    - nolintlint
+    - nonamedreturns
+    - nosprintfhostport
+    - paralleltest
+    - perfsprint
+    - prealloc
+    - predeclared
+    - promlinter
+    - protogetter
+    - reassign
+    - recvcheck
+    - revive
+    - rowserrcheck
+    - sloglint
+    - spancheck
+    - sqlclosecheck
+    - staticcheck
+    - tagalign
+    - tagliatelle
+    - testableexamples
+    - testifylint
+    - testpackage
+    - thelper
+    - tparallel
+    - unconvert
+    - unparam
+    - unqueryvet
+    - unused
+    - usestdlibvars
+    - usetesting
+    - varnamelen
+    - wastedassign
+    - whitespace
+    - wrapcheck
+    - wsl_v5
+    - zerologlint
+  settings:
+    # Only the types where a forgotten field is a bug: the handlers, the
+    # tray and feed options, and the aircraft state. Empty literals and
+    # empty returns say "nothing here" well enough.
+    exhaustruct_v5:
+      explicit-mode: true
+      enforce-patterns:
+        - '.+/internal/(simconnect\.Handlers|tray\.Options|feed\.Outputs|position\.Sample)'
+      allow-empty: true
+      allow-empty-returns: true
+    depguard:
+      rules:
+        main:
+          allow:
+            - $gostd
+            - github.com/saschagrunert/skydemon-connect
+    # The module has no dependencies, and no replace pointing at a local
+    # path.
+    gomodguard_v2:
+      local-replace-directives: true
+    gocritic:
+      enable-all: true
+      disabled-checks:
+        - unnamedResult
+      settings:
+        hugeParam:
+          sizeThreshold: 128
+    # The defaults, plus the SimConnect connection that openers return,
+    # whose real type a test fakes.
+    ireturn:
+      allow:
+        - anon
+        - error
+        - empty
+        - stdlib
+        - conn
+    varnamelen:
+      # Short names for short scopes: loop indices, coordinates, the usual
+      # receivers and Win32 handles.
+      ignore-names: [a, b, c, d, f, h, i, j, l, n, p, r, s, t, u, v, w, x, y, ok, st, tc, px, id, ip, fn, pt]
+      ignore-decls:
+        - t *testing.T
+        - wg sync.WaitGroup
+        - fs *flag.FlagSet
+    # Errors that already say what failed: this module's, the standard
+    # library's file, network and buffer errors (a *fs.PathError names its
+    # file), and those a wrapper's Write or Close returns unchanged from the
+    # io.Writer or io.Closer it wraps.
+    wrapcheck:
+      ignore-package-globs:
+        - github.com/saschagrunert/skydemon-connect/internal/*
+        - os
+        - net
+        - bytes
+      ignore-sigs:
+        - .Errorf(
+        - errors.New(
+        - errors.Unwrap(
+        - errors.Join(
+        - (io.Writer).Write(
+        - (io.Closer).Close(
+  exclusions:
+    rules:
+      # Tests spell out only the fields that matter, repeat literal inputs,
+      # and are long tables.
+      - linters:
+          - cyclop
+          - exhaustruct_v5
+          - funlen
+          - goconst
+        path: _test\.go
+      - linters:
+          - gosec
+        text: G115
+        path: _test\.go
+      # A desktop app: the files it opens are the user's own, named by
+      # flags, the exe's folder or the profile's environment.
+      - linters:
+          - gosec
+        text: G(304|703)
+      # Win32 calls go through syscall's untyped Proc.Call, whose results are
+      # checked by value (handle 0, BOOL) rather than by the error it always
+      # returns.
+      - linters:
+          - dogsled
+        path: _windows.*\.go
+      # Struct fields mirror the Windows SDK's names.
+      - linters:
+          - revive
+        text: "var-naming: struct field"
+        path: _windows.*\.go
+      # Lazily loaded Win32 DLLs and procedures: package-level, so that
+      # each is looked up once.
+      - linters:
+          - gochecknoglobals
+        text: ^(proc\w+|kernel32|user32|shell32|gdi32) is a global variable
+        path: _windows.*\.go
+      # Passing pointers to Win32 is what unsafe is for in these files.
+      - linters:
+          - gosec
+        text: G103
+        path: _windows.*\.go
+# Every formatter, listed like the linters. gofumpt and gci are stricter
+# than gofmt and goimports, whose rules they include; swaggo only touches
+# swag annotations, of which there are none.
+formatters:
+  enable:
+    - gci
+    - gofmt
+    - gofumpt
+    - goimports
+    - golines
+    - swaggo
+  settings:
+    gci:
+      sections:
+        - standard
+        - default
+        - localmodule

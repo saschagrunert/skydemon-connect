@@ -1,0 +1,19 @@
+version: 2
+updates:
+  # One pull request per ecosystem and week, not one per dependency.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+  # The main module has no dependencies; the tools module pins govulncheck
+  # and go-winres.
+  - package-ecosystem: gomod
+    directory: /tools
+    schedule:
+      interval: weekly
+    groups:
+      tools:
+        patterns: ["*"]
