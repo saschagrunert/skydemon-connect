@@ -55,6 +55,18 @@ jobs:
       # the golangci-lint the Makefile pins and checksums.
       - run: make lint
 
+  format:
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: make verify-format
+        env:
+          CONTAINER_RUNTIME: docker
+
   # Windows is where the binary runs and the Win32 code paths are tested.
   test:
     if: github.event_name != 'schedule'
@@ -148,7 +160,7 @@ jobs:
         run: |
           if [[ "$GITHUB_EVENT_NAME" != push ]] ||
             ! files=$(git diff --name-only "$BEFORE" HEAD 2>/dev/null) ||
-            grep -qE '^(Makefile|go\.mod|LICENSE|NOTICE\.md|internal/(zipfiles|simconnect)/|tools/|\.github/workflows/(ci|simconnect-dll)\.yml)' <<<"$files"; then
+            grep -qE '^(Makefile|go\.mod|LICENSE|NOTICE\.md|docs/reference\.md|internal/(zipfiles|simconnect)/|tools/|\.github/workflows/(ci|simconnect-dll)\.yml)' <<<"$files"; then
             echo build=true >> "$GITHUB_OUTPUT"
           fi
       - if: steps.changed.outputs.build == 'true'

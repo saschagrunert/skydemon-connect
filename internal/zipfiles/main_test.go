@@ -74,6 +74,62 @@ func TestReproducible(t *testing.T) {
 	}
 }
 
+// A file goes in under its base name unless the argument names it.
+func TestNames(t *testing.T) {
+	t.Parallel()
+
+	inputs := files(t, "a.exe", "reference.md")
+	out := filepath.Join(t.TempDir(), "out.zip")
+
+	err := run(out, "1764230400", []string{inputs[0], inputs[1] + "=docs/reference.md"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	r, err := zip.OpenReader(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = r.Close() }()
+
+	names := make([]string, 0, len(r.File))
+	for _, f := range r.File {
+		names = append(names, f.Name)
+	}
+
+	if len(names) != 2 || names[0] != "a.exe" || names[1] != "docs/reference.md" {
+		t.Errorf("names %q, want [a.exe docs/reference.md]", names)
+	}
+}
+
+// A file whose path has = is that file, while a name in the zip must be
+// relative and free of . and .., with \ taken as /.
+func TestEntry(t *testing.T) {
+	t.Parallel()
+
+	withEq := files(t, "a=b")[0]
+	missing := filepath.Join(t.TempDir(), "x")
+
+	for arg, want := range map[string][2]string{
+		withEq:                {withEq, "a=b"},
+		withEq + "=docs/a.md": {withEq, "docs/a.md"},
+		"f=docs\\a.md":        {"f", "docs/a.md"},
+		missing:               {missing, "x"},
+	} {
+		src, name, err := entry(arg)
+		if err != nil || src != want[0] || name != want[1] {
+			t.Errorf("%s: %q %q %v, want %q %q", arg, src, name, err, want[0], want[1])
+		}
+	}
+
+	for _, arg := range []string{"f=", "f=/etc/x", "f=../x", "f=a/../x", "f=.", "f=a//b", "f=a\\..\\..\\x"} {
+		_, _, err := entry(arg)
+		if !errors.Is(err, errBadName) {
+			t.Errorf("%s: %v, want %v", arg, err, errBadName)
+		}
+	}
+}
+
 // A failed run leaves no zip behind, which make would take as built.
 func TestFailureRemovesZip(t *testing.T) {
 	t.Parallel()
