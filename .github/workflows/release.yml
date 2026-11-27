@@ -103,13 +103,33 @@ jobs:
             build/SkyDemonConnect-*.zip
             build/SkyDemonConnect.exe
       # Only the zip is published: a bare exe lacks SimConnect.dll. Tags with
-      # a hyphen (v1.0.0-rc.1) become pre-releases.
+      # a hyphen (v1.0.0-rc.1) become pre-releases. A draft release for the
+      # tag, made by hand for its notes, gets the assets and is published as
+      # it is. Releases are immutable: a published one takes no assets, and
+      # the tag of a deleted one can't be released again.
       - env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
         run: |
-          flags=(--verify-tag --generate-notes --title "$GITHUB_REF_NAME"
-            --notes "Download SkyDemonConnect-$GITHUB_REF_NAME.zip, extract it to a folder of its own and start SkyDemonConnect.exe. See README.md for setup and docs/reference.md in the zip for the details.")
-          [[ "$GITHUB_REF_NAME" == *-* ]] && flags+=(--prerelease)
-          gh release create "$GITHUB_REF_NAME" "${flags[@]}" \
-            build/SkyDemonConnect-*.zip build/SHA256SUMS
+          assets=(build/SkyDemonConnect-*.zip build/SHA256SUMS)
+          draft=$(gh api "repos/$GH_REPO/releases" --paginate \
+            --jq '.[] | select(.tag_name == env.TAG) | .draft')
+          case "$draft" in
+            "")
+              flags=(--verify-tag --generate-notes --title "$TAG"
+                --notes "Download SkyDemonConnect-$TAG.zip, extract it to a folder of its own and start SkyDemonConnect.exe. See README.md for setup and docs/reference.md in the zip for the details.")
+              [[ "$TAG" == *-* ]] && flags+=(--prerelease)
+              gh release create "$TAG" "${flags[@]}" "${assets[@]}"
+              ;;
+            true)
+              gh release upload "$TAG" --clobber "${assets[@]}"
+              flags=(--draft=false)
+              [[ "$TAG" == *-* ]] && flags+=(--prerelease)
+              gh release edit "$TAG" "${flags[@]}"
+              ;;
+            *)
+              echo "::error::$TAG is already released, and an immutable release takes no assets: tag a new version, and make its release a draft or leave it to this workflow"
+              exit 1
+              ;;
+          esac

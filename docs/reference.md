@@ -173,7 +173,11 @@ downloading the 650 MB MSFS SDK installer, and needs curl, unzip and
 
 Pushing a `v*` tag on `main` runs CI and publishes a release with
 `SHA256SUMS` and build provenance, which `gh attestation verify` checks. A
-tag like `v1.2.0-rc.1` makes a pre-release, to try the release first. To
+tag like `v1.2.0-rc.1` makes a pre-release, to try the release first. For
+notes of your own, save a draft release for the tag before approving the
+`release` job; it publishes the draft with the assets. Don't publish or delete
+the release by hand: releases are immutable, so a published one takes no
+assets, and a deleted one's tag can't be released again. To
 bump the MSFS SDK, golangci-lint, Prettier, node or Go, see the comments at the
 top of the Makefile and in `.github/workflows/ci.yml`; Dependabot covers the
 actions, go-winres and govulncheck. GitHub turns off scheduled workflows
