@@ -13,7 +13,6 @@ import (
 	"github.com/saschagrunert/skydemon-connect/internal/feed"
 	"github.com/saschagrunert/skydemon-connect/internal/position"
 	"github.com/saschagrunert/skydemon-connect/internal/testutil"
-	"github.com/saschagrunert/skydemon-connect/internal/tray"
 )
 
 var errFailed = errors.New("SimConnect.dll not found")
@@ -21,62 +20,65 @@ var errFailed = errors.New("SimConnect.dll not found")
 func TestStatus(t *testing.T) {
 	t.Parallel()
 
-	f := feed.New(feed.Outputs{}, testutil.Log(t))
+	// In a bubble: the status depends on the time since each frame.
+	synctest.Test(t, func(t *testing.T) {
+		f := feed.New(feed.Outputs{}, testutil.Log(t))
 
-	st := f.Status()
-	if st.Kind != feed.Waiting || st.String() != "Waiting for MSFS…" {
-		t.Errorf("new feed: %+v %q", st, st.String())
-	}
+		st := f.Status()
+		if st.Kind != feed.Waiting || st.String() != "Waiting for MSFS…" {
+			t.Errorf("new feed: %+v %q", st, st.String())
+		}
 
-	// Connected, but in a menu: still Waiting, with the reason.
-	f.SetConnected(true)
+		// Connected, but in a menu: still Waiting, with the reason.
+		f.SetConnected(true)
 
-	if st := f.Status(); st.Kind != feed.Waiting || !st.Connected ||
-		st.String() != "Connected to MSFS, waiting for a flight" {
-		t.Errorf("connected in a menu: %+v %q", st, st.String())
-	}
+		if st := f.Status(); st.Kind != feed.Waiting || !st.Connected ||
+			st.String() != "Connected to MSFS, waiting for a flight" {
+			t.Errorf("connected in a menu: %+v %q", st, st.String())
+		}
 
-	f.SetConnected(false)
+		f.SetConnected(false)
 
-	f.SetLive(true)
-	f.Update(position.Sample{}) // 0°/0°: no position
+		f.SetLive(true)
+		f.Update(position.Sample{}) // 0°/0°: no position
 
-	if f.Status().Kind != feed.Waiting {
-		t.Error("0°/0° sample accepted")
-	}
+		if f.Status().Kind != feed.Waiting {
+			t.Error("0°/0° sample accepted")
+		}
 
-	f.Update(position.Sample{Lat: 51, Lon: 12, AltM: 762, GSKnots: 100, TrackTrue: 90})
+		f.Update(position.Sample{Lat: 51, Lon: 12, AltM: 762, GSKnots: 100, TrackTrue: 90})
 
-	// Before a second of frames, the frame rate isn't known.
-	st = f.Status()
-	if st.Kind != feed.Sending || st.String() != "2500 ft · 100 kt · trk 090" {
-		t.Errorf("sending: %+v %q", st, st.String())
-	}
+		// Before a second of frames, the frame rate isn't known.
+		st = f.Status()
+		if st.Kind != feed.Sending || st.String() != "2500 ft · 100 kt · trk 090" {
+			t.Errorf("sending: %+v %q", st, st.String())
+		}
 
-	f.Update(position.Sample{Lat: 51, Lon: 12, TrackTrue: 359.6})
+		f.Update(position.Sample{Lat: 51, Lon: 12, TrackTrue: 359.6})
 
-	if s := f.Status(); !strings.HasSuffix(s.String(), "trk 000") {
-		t.Errorf("track 359.6 should show as 000: %q", s.String())
-	}
+		if s := f.Status(); !strings.HasSuffix(s.String(), "trk 000") {
+			t.Errorf("track 359.6 should show as 000: %q", s.String())
+		}
 
-	f.SetError(errFailed)
+		f.SetError(errFailed)
 
-	st = f.Status()
-	if st.Kind != feed.Failed || !strings.Contains(st.String(), "SimConnect.dll") {
-		t.Errorf("failed: %+v %q", st, st.String())
-	}
+		st = f.Status()
+		if st.Kind != feed.Failed || !strings.Contains(st.String(), "SimConnect.dll") {
+			t.Errorf("failed: %+v %q", st, st.String())
+		}
 
-	f.Update(position.Sample{Lat: 51, Lon: 12})
+		f.Update(position.Sample{Lat: 51, Lon: 12})
 
-	if f.Status().Kind != feed.Sending {
-		t.Error("an update should clear the error")
-	}
+		if f.Status().Kind != feed.Sending {
+			t.Error("an update should clear the error")
+		}
 
-	f.SetLive(false)
+		f.SetLive(false)
 
-	if f.Status().Kind != feed.Waiting {
-		t.Error("still sending after the session ended")
-	}
+		if f.Status().Kind != feed.Waiting {
+			t.Error("still sending after the session ended")
+		}
+	})
 }
 
 // TestWhenToSend checks when the feed sends: only positions from the
@@ -150,17 +152,6 @@ func TestRun(t *testing.T) {
 
 	cancel()
 	<-done
-}
-
-// The failures the tray shows fit its tooltip.
-func TestFailuresFitTheTooltip(t *testing.T) {
-	t.Parallel()
-
-	for _, msg := range feed.FailureTexts() {
-		if len(msg) > tray.MaxErrLen {
-			t.Errorf("%q: %d characters, room for %d", msg, len(msg), tray.MaxErrLen)
-		}
-	}
 }
 
 // The status says how many frames a second the sim sends, and nothing

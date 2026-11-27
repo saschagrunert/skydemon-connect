@@ -73,12 +73,25 @@ func (s *statusLine) end() {
 
 // runConsoleUntilInterrupt runs the console mode on out until Ctrl+C, or,
 // so that the SimConnect session and the COM port are closed properly,
-// until the console window is closed (SIGTERM on Windows).
+// until the console window is closed or the session ends. On Windows Go
+// turns closing the console into SIGTERM; logoff and shutdown come from
+// onSessionEnd, which waits until the app shut down.
 func runConsoleUntilInterrupt(c *config, out io.Writer) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	return runConsole(ctx, c, out, simconnect.Run, statusEvery)
+	done := make(chan struct{})
+
+	onSessionEnd(func() {
+		cancel()
+		<-done
+	})
+
+	err := runConsole(ctx, c, out, simconnect.Run, statusEvery)
+
+	close(done)
+
+	return err
 }
 
 // runConsole runs with a status line on out, redrawn every interval,
@@ -96,10 +109,16 @@ func runConsole(
 
 	l.Printf("SkyDemonConnect %s, %d Hz", version, feed.RateHz)
 
+	// With -auto, as with the tray, MSFS's exit ends the app.
+	watched := false
+	if c.auto {
+		ctx, watched = watchMSFS(ctx, l)
+	}
+
 	r, err := startFeed(
 		ctx,
 		c,
-		input{sim: sim, quitOnSessionEnd: sessionEndQuits(c.auto, false)},
+		input{sim: sim, quitOnSessionEnd: sessionEndQuits(c.auto, watched)},
 		l,
 	)
 	if err != nil {

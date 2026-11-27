@@ -1,0 +1,7 @@
+# LF everywhere, also in a Windows checkout: the formatters golangci-lint
+# runs reject CRLF.
+* text=auto eol=lf
+*.pdf binary
+*.png binary
+*.ico binary
+*.syso binary

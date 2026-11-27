@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -144,6 +145,65 @@ func TestCreateLogExclusive(t *testing.T) {
 	got, err := os.ReadFile(theirs)
 	if err != nil || string(got) != "other copy\n" {
 		t.Errorf("the other copy's log: %q, %v", got, err)
+	}
+}
+
+// A per-process log left by an exited process whose PID we now have is
+// overwritten, not a reason to log elsewhere.
+func TestCreateLogReusedPID(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	stale := filepath.Join(dir, fmt.Sprintf("%s.%d.log", logStem, os.Getpid()))
+
+	err := os.WriteFile(stale, []byte("a process long gone\n"), 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The main log is busy, so this start needs its own.
+	busy := func(string, string) error { return os.ErrPermission }
+
+	f, err := createLogWith(dir, busy)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_ = f.Close()
+
+	got, err := os.ReadFile(stale)
+	if f.Name() != stale || err != nil || len(got) != 0 {
+		t.Errorf("log %q, old content %q, %v", f.Name(), got, err)
+	}
+}
+
+// A start that mustn't touch the main log, e.g. an -auto copy while another
+// copy runs, gets one of its own, in the first folder it can write to.
+func TestOpenOwnLog(t *testing.T) {
+	t.Parallel()
+
+	notADir := filepath.Join(t.TempDir(), "file")
+
+	err := os.WriteFile(notADir, nil, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	dir := t.TempDir()
+
+	f := openOwnLog(notADir, dir)
+	if f == nil {
+		t.Fatal("no log")
+	}
+
+	_ = f.Close()
+
+	if f.Name() != ownLog(dir) || !isPerProcessLog(f.Name()) {
+		t.Errorf("log %q, want %q", f.Name(), ownLog(dir))
+	}
+
+	if f := openOwnLog(notADir); f != nil {
+		t.Errorf("log %q without a writable folder", f.Name())
 	}
 }
 

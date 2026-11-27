@@ -8,6 +8,7 @@ import (
 	"math"
 	"net/netip"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -527,15 +528,17 @@ func TestStaleStandsStill(t *testing.T) {
 func TestDropsNonFinite(t *testing.T) {
 	t.Parallel()
 
-	f, _ := newFeed(Outputs{})
-	f.SetLive(true)
-	f.Update(flying())
-	f.Update(position.Sample{Lat: math.NaN(), Lon: 12})
-	f.Update(position.Sample{Lat: 51, Lon: 12, AltM: math.Inf(1)})
+	synctest.Test(t, func(t *testing.T) {
+		f, _ := newFeed(Outputs{})
+		f.SetLive(true)
+		f.Update(flying())
+		f.Update(position.Sample{Lat: math.NaN(), Lon: 12})
+		f.Update(position.Sample{Lat: 51, Lon: 12, AltM: math.Inf(1)})
 
-	if st := f.Status(); st.Kind != Sending || st.Sample != flying() {
-		t.Errorf("after NaN and Inf samples: %+v", st)
-	}
+		if st := f.Status(); st.Kind != Sending || st.Sample != flying() {
+			t.Errorf("after NaN and Inf samples: %+v", st)
+		}
+	})
 }
 
 func TestSerialFailsNamesPort(t *testing.T) {
@@ -543,5 +546,150 @@ func TestSerialFailsNamesPort(t *testing.T) {
 
 	if got := serialFails("COM11"); !strings.HasPrefix(got, "COM11: ") {
 		t.Errorf("serial failure %q names no port", got)
+	}
+}
+
+// The failures the tray shows fit its tooltip.
+func TestFailuresFitTheTooltip(t *testing.T) {
+	t.Parallel()
+
+	for _, msg := range []string{
+		udpFailsText, noTargetsText, serialFails(""), serialFails(`\\.\COM255`),
+	} {
+		if len(msg) > MaxErrLen {
+			t.Errorf("%q: %d characters, room for %d", msg, len(msg), MaxErrLen)
+		}
+	}
+}
+
+// A new session judges the outputs afresh: a COM port that failed before
+// doesn't show as failing until its next writes settle.
+func TestSetLiveForgetsOutputErrors(t *testing.T) {
+	t.Parallel()
+
+	synctest.Test(t, func(t *testing.T) {
+		w := &serialWriter{err: errBoom}
+		f, _ := newFeed(Outputs{Serial: w})
+		f.SetLive(true)
+		f.Update(flying())
+
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+
+		go f.runSerial(ctx)
+
+		f.send(flying(), time.Now())
+		synctest.Wait()
+		time.Sleep(outputSettle)
+		f.send(flying(), time.Now())
+		synctest.Wait()
+
+		if st := f.Status(); st.Kind != Failed {
+			t.Fatalf("failing serial: %+v", st)
+		}
+
+		f.SetLive(false)
+		f.SetLive(true)
+		f.Update(flying())
+
+		if st := f.Status(); st.Kind != Sending {
+			t.Errorf("new session: %+v", st)
+		}
+	})
+}
+
+// sentLats returns the latitudes of the XGPS messages sent to dest.
+func (u *fakeUDP) sentLats(t *testing.T, dest netip.AddrPort) []float64 {
+	t.Helper()
+
+	u.mu.Lock()
+	defer u.mu.Unlock()
+
+	var lats []float64
+
+	for _, p := range u.got {
+		fields := strings.Split(p.msg, ",")
+		if p.to != dest || !strings.HasPrefix(p.msg, "XGPS") || len(fields) < 3 {
+			continue
+		}
+
+		lat, err := strconv.ParseFloat(fields[2], 64)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		lats = append(lats, lat)
+	}
+
+	return lats
+}
+
+// Positions go out at RateHz whatever the sim's frame rate, moved on to
+// the time they are sent: the aircraft moves the same distance between
+// any two packets. Without that, at 45 fps the steps alternate between one
+// frame's distance and two, at 25 fps every sixth packet repeats one.
+func TestSendMovesPositionOn(t *testing.T) {
+	t.Parallel()
+
+	const (
+		knots   = 100
+		metres  = knots * position.KnotsToMetersPerSecond / RateHz // per packet
+		degrees = 111195.0                                         // metres a degree north
+	)
+
+	for _, fps := range []int{25, 45, 60} {
+		synctest.Test(t, func(t *testing.T) {
+			u := &fakeUDP{}
+			f, _ := newFeed(Outputs{UDP: u, Name: "T", NoAttitude: true})
+			f.SetTargets([]netip.AddrPort{target(1)})
+			f.SetLive(true)
+
+			ctx, cancel := context.WithCancel(t.Context())
+			done := make(chan struct{})
+
+			go func() {
+				defer close(done)
+
+				f.Run(ctx)
+			}()
+
+			// Due north at a steady speed: the latitude is the time since
+			// start.
+			start := time.Now()
+			perSecond := knots * position.KnotsToMetersPerSecond / degrees
+
+			for range 2 * fps {
+				lat := 51 + time.Since(start).Seconds()*perSecond
+				f.Update(position.Sample{Lat: lat, Lon: 12, GSKnots: knots})
+				time.Sleep(time.Second / time.Duration(fps))
+			}
+
+			// The sim hangs: the position is moved on by maxAhead at most,
+			// and stays there once it counts as standing still, without
+			// stepping back.
+			last := f.Status().Sample.Lat
+
+			time.Sleep(staleAfter + time.Second)
+			synctest.Wait()
+			cancel()
+			<-done
+
+			lats := u.sentLats(t, target(1))
+			moving := lats[2 : 2*RateHz-2]
+
+			for i := 1; i < len(moving); i++ {
+				// 6 decimals are 0.11 m, which each end may be off by half.
+				if step := (moving[i] - moving[i-1]) * degrees; math.Abs(step-metres) > 0.25 {
+					t.Errorf("%d fps, packet %d: moved %.2f m, want %.2f", fps, i, step, metres)
+				}
+			}
+
+			ahead := (lats[len(lats)-1] - last) * degrees
+
+			want := maxAhead.Seconds() * knots * position.KnotsToMetersPerSecond
+			if math.Abs(ahead-want) > 0.25 {
+				t.Errorf("%d fps, hung sim: moved on %.2f m, want %.2f", fps, ahead, want)
+			}
+		})
 	}
 }

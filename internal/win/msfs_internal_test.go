@@ -13,6 +13,9 @@ func TestIsMSFS(t *testing.T) {
 		`C:\Flight Simulator Tools\launcher.exe`: false,
 		"":                                       false,
 		`C:\XboxGames\Microsoft Flight Simulator 2024\Co`: false,
+		`C:\Tools\FlightSimulatorHelper.exe`:              false,
+		`C:\Tools\flightsimulator2024.exe.bak`:            false,
+		`FlightSimulator2024.exe`:                         true,
 	} {
 		if got := isMSFS(path); got != want {
 			t.Errorf("isMSFS(%q) = %v, want %v", path, got, want)

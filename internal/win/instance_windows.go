@@ -21,7 +21,7 @@ const (
 func AlreadyRunning() bool { return alreadyRunning(mutexName) }
 
 func alreadyRunning(mutex string) bool {
-	name := utf16Ptr(mutex)
+	name := UTF16Ptr(mutex)
 	_, _, err := procCreateMutexW.Call(0, 0, uintptr(unsafe.Pointer(name)))
 
 	// Access is denied when an instance with a higher integrity level, e.g.

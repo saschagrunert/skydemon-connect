@@ -1,5 +1,11 @@
 GO ?= go
 
+# go.mod's toolchain line is only a minimum: a newer local Go would build a
+# different exe. This runs that exact one, downloading it if needed; set
+# GOTOOLCHAIN to override.
+GOTOOLCHAIN ?= $(shell sed -n 's/^toolchain //p' go.mod)
+export GOTOOLCHAIN := $(GOTOOLCHAIN)
+
 # golangci-lint ships as a binary, not as a Go tool dependency (its authors
 # advise against building it from source), so bump the version and the
 # checksums below by hand. govulncheck is pinned in tools/go.mod, which
@@ -108,10 +114,12 @@ build: $(BINARY) ## Build build/SkyDemonConnect.exe (Windows, GUI subsystem)
 
 $(BINARY): $(SYSO)
 	@mkdir -p $(BUILD_DIR)
-	GOOS=windows GOARCH=amd64 CGO_ENABLED=0 $(GO) build -trimpath -ldflags "$(LDFLAGS)" -o $(BINARY) ./cmd/skydemon-connect
-	@# Left in the source tree, the resource would go into every later
-	@# Windows go build or go test, with this build's version.
-	rm -f $(SYSO)
+	@# The resource is removed also when the build fails: left in the
+	@# source tree, it would go into every later Windows go build or go
+	@# test, with this build's version.
+	GOOS=windows GOARCH=amd64 CGO_ENABLED=0 $(GO) build -trimpath -buildvcs=false \
+		-ldflags "$(LDFLAGS)" -o $(BINARY) ./cmd/skydemon-connect; \
+		s=$$?; rm -f $(SYSO); exit $$s
 
 .PHONY: $(SYSO)
 $(SYSO): $(BUILD_DIR)/go-winres$(EXE)
@@ -129,10 +137,11 @@ $(BUILD_DIR)/go-winres$(EXE): tools/go.mod tools/go.sum
 .PHONY: bundle
 bundle: $(BUNDLE) ## Zip the exe with SimConnect.dll from the MSFS SDK (needs msiextract)
 
-# The entries get the commit's time, so the same commit gives the same zip.
-$(BUNDLE): $(BINARY) $(SDK_DIR)/SimConnect.dll LICENSE NOTICE.md
-	$(HOST_GO) run ./internal/zipfiles $@ "$$(git log -1 --format=%ct)" \
-		$(BINARY) $(SDK_DIR)/SimConnect.dll "$(SDK_DIR)/MSFS SDK EULA.pdf" LICENSE NOTICE.md
+# The entries get SOURCE_DATE_EPOCH, or else the commit's time, so the same
+# commit gives the same zip.
+$(BUNDLE): $(BINARY) $(SDK_DIR)/SimConnect.dll README.md LICENSE NOTICE.md
+	$(HOST_GO) run ./internal/zipfiles $@ "$${SOURCE_DATE_EPOCH:-$$(git log -1 --format=%ct)}" \
+		$(BINARY) $(SDK_DIR)/SimConnect.dll "$(SDK_DIR)/MSFS SDK EULA.pdf" README.md LICENSE NOTICE.md
 
 # The SDK installer is an MSI with external cabinets; msiextract unpacks
 # all of it, of which two files are kept.
@@ -143,7 +152,7 @@ $(SDK_DIR)/SimConnect.dll:
 	done
 	rm -rf $(SDK_DIR)/msi $(SDK_DIR)/files
 	mkdir -p $(SDK_DIR)/msi
-	[ -f $(SDK_DIR)/sdk.zip ] || curl -sSfL -o $(SDK_DIR)/sdk.zip.part "$(SDK_URL)"
+	[ -f $(SDK_DIR)/sdk.zip ] || curl -sSfL --retry 3 -o $(SDK_DIR)/sdk.zip.part "$(SDK_URL)"
 	[ -f $(SDK_DIR)/sdk.zip ] || mv $(SDK_DIR)/sdk.zip.part $(SDK_DIR)/sdk.zip
 	@$(call check_sha256,$(SDK_DIR)/sdk.zip,$(SDK_SHA256),keep)
 	unzip -q -j $(SDK_DIR)/sdk.zip -d $(SDK_DIR)/msi
@@ -186,7 +195,7 @@ lint: $(filter $(BUILD_DIR)/%,$(GOLANGCI_LINT)) ## Run golangci-lint for the hos
 # tar (GNU) can't.
 $(BUILD_DIR)/golangci-lint-$(GOLANGCI_LINT_VERSION)$(EXE):
 	@mkdir -p $(BUILD_DIR)
-	curl -sSfL -o $(BUILD_DIR)/golangci-lint.$(LINT_ARCHIVE) \
+	curl -sSfL --retry 3 -o $(BUILD_DIR)/golangci-lint.$(LINT_ARCHIVE) \
 		https://github.com/golangci/golangci-lint/releases/download/v$(GOLANGCI_LINT_VERSION)/golangci-lint-$(GOLANGCI_LINT_VERSION)-$(HOST_OS)-$(HOST_ARCH).$(LINT_ARCHIVE)
 	$(call verify_checksum,$(BUILD_DIR)/golangci-lint.$(LINT_ARCHIVE),GOLANGCI_LINT)
 	$(call unpack,$(BUILD_DIR)/golangci-lint.$(LINT_ARCHIVE),golangci-lint-$(GOLANGCI_LINT_VERSION)-$(HOST_OS)-$(HOST_ARCH)/golangci-lint$(EXE))

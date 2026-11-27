@@ -18,7 +18,7 @@ const (
 // window of its own, and a box behind a fullscreen MSFS would go unseen and
 // keep the process waiting.
 func messageBox(owner uintptr, text string, flags uintptr) {
-	t, c := utf16Ptr(text), utf16Ptr("SkyDemonConnect")
+	t, c := UTF16Ptr(text), UTF16Ptr("SkyDemonConnect")
 	_, _, _ = procMessageBoxW.Call(owner, uintptr(unsafe.Pointer(t)), uintptr(unsafe.Pointer(c)),
 		flags|mbSetForeground|mbTopmost)
 }

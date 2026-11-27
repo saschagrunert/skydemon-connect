@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"log"
-	"net/netip"
 	"strings"
 	"sync"
 	"testing"
@@ -13,7 +12,6 @@ import (
 
 	"github.com/saschagrunert/skydemon-connect/internal/feed"
 	"github.com/saschagrunert/skydemon-connect/internal/simconnect"
-	"github.com/saschagrunert/skydemon-connect/internal/targets"
 	"github.com/saschagrunert/skydemon-connect/internal/testutil"
 )
 
@@ -26,8 +24,8 @@ func TestOpenOutputs(t *testing.T) {
 	}
 	defer outs.shutdown(&sync.WaitGroup{}, testutil.Log(t))
 
-	if len(outs.targets) == 0 || outs.conn == nil || outs.port != nil {
-		t.Errorf("targets %v, udp %v, serial %v", outs.targets, outs.conn, outs.port)
+	if len(outs.targets) == 0 || outs.UDP == nil || outs.Serial != nil {
+		t.Errorf("targets %v, udp %v, serial %v", outs.targets, outs.UDP, outs.Serial)
 	}
 }
 
@@ -138,45 +136,4 @@ func TestStartFeedQuit(t *testing.T) {
 			}
 		})
 	}
-}
-
-func TestRefreshTargets(t *testing.T) {
-	t.Parallel()
-
-	synctest.Test(t, func(t *testing.T) {
-		a := netip.MustParseAddrPort("127.0.0.1:1")
-		b := netip.MustParseAddrPort("127.0.0.1:2")
-		calls := 0
-		resolve := func(context.Context) targets.List {
-			calls++
-			if calls < 3 {
-				return targets.List{a}
-			}
-
-			return targets.List{a, b}
-		}
-
-		var sets [][]netip.AddrPort
-
-		set := func(l []netip.AddrPort) { sets = append(sets, l) }
-
-		ctx, cancel := context.WithCancel(t.Context())
-		done := make(chan struct{})
-
-		go func() {
-			defer close(done)
-
-			refreshTargets(ctx, targetRefresh, resolve, set, targets.List{a}, testutil.Log(t))
-		}()
-
-		time.Sleep(5*targetRefresh + time.Second)
-		synctest.Wait()
-		cancel()
-		<-done
-
-		// Once at the start, then every interval.
-		if calls != 6 || len(sets) != 1 || len(sets[0]) != 2 {
-			t.Errorf("%d resolves, sets %v: want 6 and one change to [a b]", calls, sets)
-		}
-	})
 }

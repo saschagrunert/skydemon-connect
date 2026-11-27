@@ -33,7 +33,9 @@ const (
 	backupExt = ".bak-skydemonconnect"
 	prevExt   = ".prev-skydemonconnect"
 	fileMode  = 0o644
-	maxLatin1 = 0xFF
+	// maxByte is the highest character one byte holds, as a bytewise
+	// file is read.
+	maxByte = 0xFF
 	// project is where the README shows the entry to add by hand.
 	project = "github.com/saschagrunert/skydemon-connect"
 	// byHand is what to do about a file this package won't change.
@@ -73,12 +75,13 @@ var (
 
 	errNoInstall = errors.New("MSFS 2024 not found (Microsoft Store or Steam). " +
 		"Start MSFS once, or add the entry by hand, see " + project)
-	errChanged    = errors.New("changed while it was being edited, try again")
-	errNoDocClose = errors.New("exe.xml has no " + docClose + ", not touching it" + byHand)
-	errUTF16      = errors.New("exe.xml is UTF-16 or binary, not touching it" + byHand)
-	errNotLatin1  = errors.New("character can't be written to a Windows-1252 exe.xml")
-	errNotFile    = errors.New("is not a file")
-	errBrokenLink = errors.New("is a link to a file that isn't there, not touching it" + byHand)
+	errChanged      = errors.New("changed while it was being edited, try again")
+	errNoDocClose   = errors.New("exe.xml has no " + docClose + ", not touching it" + byHand)
+	errUTF16        = errors.New("exe.xml is UTF-16 or binary, not touching it" + byHand)
+	errNotEncodable = errors.New("character can't be written in exe.xml's encoding")
+	errNotFile      = errors.New("is not a file")
+	errReadOnly     = errors.New("is read-only; clear Read-only in its Properties to change it")
+	errBrokenLink   = errors.New("is a link to a file that isn't there, not touching it" + byHand)
 )
 
 // Installs are the exe.xml files of the MSFS 2024 installations on a PC.
@@ -113,37 +116,56 @@ const (
 	// Absent means no file has an entry for SkyDemonConnect.
 	Absent State = iota
 	// Other means an entry exists, but not for this exe and these options,
-	// e.g. from before the exe was moved, from another copy, or disabled.
-	// Set(true) replaces it, Set(false) removes it.
+	// e.g. from before the exe was moved, from another copy, or disabled,
+	// or only in some of the files. Set(true) replaces it, Set(false)
+	// removes it.
 	Other
-	// Ours means an entry launches SkyDemonConnect from this exe with
-	// these options.
+	// Ours means every file's entry launches SkyDemonConnect from this
+	// exe with these options.
 	Ours
 )
 
-// State reports whether any of the files launches SkyDemonConnect from
-// exePath with args, as Set writes them (Ours), has an entry for it that
-// differs (Other), or none (Absent). An entry marked
-// <Disabled>True</Disabled> counts as Other.
+// State reports whether every file that can be read launches
+// SkyDemonConnect from exePath with args, as Set writes them (Ours), none
+// has an entry for it (Absent), or anything in between (Other): an entry
+// that differs, or one only in some of the files, as a Set that failed
+// for one of them leaves. A click on Other thus completes the entry rather
+// than removing it. An entry marked <Disabled>True</Disabled> counts as
+// Other, and so do two entries of ours in one file. A file that can't be
+// read, or that Set couldn't add the entry to, e.g. one without
+// </SimBase.Document> or a read-only one, is left out: otherwise a click
+// would try to add to it forever, and the entry in the others could never
+// be removed.
 func (in Installs) State(exePath string, args []string) State {
-	state := Absent
+	var ours, others, read int
+
+	commandLine := commandLine(args)
 
 	for _, p := range in {
-		doc, _, err := read(p)
-		if err != nil {
+		doc, ok := settable(p, exePath, commandLine)
+		if !ok {
 			continue
 		}
 
-		switch entryState(doc, exePath, commandLine(args)) {
+		read++
+
+		switch entryState(doc, exePath, commandLine) {
 		case Ours:
-			return Ours
+			ours++
 		case Other:
-			state = Other
+			others++
 		case Absent:
 		}
 	}
 
-	return state
+	switch {
+	case read > 0 && ours == read:
+		return Ours
+	case ours > 0 || others > 0:
+		return Other
+	}
+
+	return Absent
 }
 
 // Set adds (enable) or removes our entry in every file. The entry's
@@ -151,11 +173,13 @@ func (in Installs) State(exePath string, args []string) State {
 // command line as needed, e.g. "-name=My Sim". Enabling replaces an
 // existing entry, also one that was disabled by hand or has other args.
 //
-// Before each change of an existing file, it is copied to
-// exe.xml.prev-skydemonconnect, and before the first change ever also to
-// exe.xml.bak-skydemonconnect, which is kept from then on; if that fails,
-// the file is left alone. A file that can't be changed doesn't stop the
-// others.
+// A file that already has this entry, once, is left as it is. Before each change
+// of a file, it is copied to exe.xml.prev-skydemonconnect, and before the
+// first change ever also to exe.xml.bak-skydemonconnect, which is kept from
+// then on; if that fails, the file is left alone. For a file that wasn't
+// there, the copies hold an exe.xml without entries, which MSFS treats as
+// it treats none, so that the original never holds our entry. A file that
+// can't be changed doesn't stop the others.
 func (in Installs) Set(enable bool, exePath string, args []string) error {
 	if len(in) == 0 {
 		return errNoInstall

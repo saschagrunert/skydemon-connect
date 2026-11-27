@@ -178,15 +178,15 @@ func TestMenuNoLog(t *testing.T) {
 	}
 }
 
-// An error of MaxErrLen characters fills the tooltip exactly, as feed's
-// status puts it, after the title.
+// An error of feed.MaxErrLen characters fills the tooltip exactly, as feed's
+// status puts it, after the title: feed's budget is this layout.
 func TestTooltipBudget(t *testing.T) {
 	t.Parallel()
 
-	st := feed.Status{Kind: feed.Failed, Err: strings.Repeat("x", MaxErrLen)}
+	st := feed.Status{Kind: feed.Failed, Err: strings.Repeat("x", feed.MaxErrLen)}
 	if n := len(tooltip(st.String())); n != tooltipRoom {
 		t.Errorf("a %d-character error makes a %d-character tooltip, room for %d",
-			MaxErrLen, n, tooltipRoom)
+			feed.MaxErrLen, n, tooltipRoom)
 	}
 }
 

@@ -6,7 +6,6 @@ import (
 	"io"
 	"log"
 	"net"
-	"net/netip"
 	"slices"
 	"strings"
 	"sync"
@@ -30,40 +29,18 @@ const (
 
 // outputs are the opened destinations.
 type outputs struct {
+	// Outputs is what the feed sends to. UDP and Serial are set only when
+	// open, and are closed by shutdown.
+	feed.Outputs
+
 	resolver *targets.Resolver
-	// conn sends to the UDP targets; nil without any.
-	conn *net.UDPConn
-	// port is the COM port for NMEA; nil without -com.
-	port io.WriteCloser
 	// targets are the UDP destinations at the start: the ones that need no
 	// name lookup, so that nothing waits for a tablet that is off.
 	targets targets.List
 }
 
-// feedOutputs returns what the feed sends to, as c configures it.
-func (o *outputs) feedOutputs(c *config) feed.Outputs {
-	outs := feed.Outputs{
-		UDP:        nil,
-		Name:       c.name,
-		NoAttitude: c.noAttitude,
-		Serial:     nil,
-		SerialName: c.com,
-	}
-
-	// An interface holding a nil pointer isn't nil: only set what is open.
-	if o.conn != nil {
-		outs.UDP = o.conn
-	}
-
-	if o.port != nil {
-		outs.Serial = o.port
-	}
-
-	return outs
-}
-
 // nmeaText describes the NMEA output, e.g. "COM11 at 115200 baud".
-func nmeaText(c *config) string { return fmt.Sprintf("%s at %d baud", c.com, c.baudRate) }
+func nmeaText(c *config) string { return fmt.Sprintf("%s at %d baud", c.com, c.baud) }
 
 // shutdown closes the outputs once the background work, already
 // told to stop, ended or shutdownWait passed.
@@ -72,9 +49,7 @@ func (o *outputs) shutdown(work *sync.WaitGroup, l *log.Logger) {
 	// which the wait below would otherwise sit out. An open that blocks
 	// in the driver, e.g. of a Bluetooth port whose device is off, is
 	// still waited out.
-	if o.port != nil {
-		_ = o.port.Close()
-	}
+	closeQuietly(o.Serial)
 
 	done := make(chan struct{})
 
@@ -89,15 +64,29 @@ func (o *outputs) shutdown(work *sync.WaitGroup, l *log.Logger) {
 		l.Printf("shutdown: gave up waiting for background work")
 	}
 
-	if o.conn != nil {
-		_ = o.conn.Close()
+	closeQuietly(o.UDP)
+}
+
+// closeQuietly closes w if it is open; at shutdown there is nobody to tell
+// about an error.
+func closeQuietly(w any) {
+	if c, ok := w.(io.Closer); ok {
+		_ = c.Close()
 	}
 }
 
 // openOutputs opens what c, as validated by parseFlags, sends to.
 func openOutputs(c *config, l *log.Logger) (*outputs, error) {
 	spec := c.spec
-	outs := &outputs{resolver: spec.Resolver(l), conn: nil, port: nil, targets: nil}
+	outs := &outputs{
+		UDP:        nil,
+		Name:       c.name,
+		NoAttitude: c.noAttitude,
+		Serial:     nil,
+		SerialName: c.com,
+		resolver:   spec.Resolver(l),
+		targets:    nil,
+	}
 
 	if !spec.Empty() {
 		// Go enables SO_BROADCAST on IPv4 UDP sockets.
@@ -106,14 +95,14 @@ func openOutputs(c *config, l *log.Logger) (*outputs, error) {
 			return nil, fmt.Errorf("udp: %w", err)
 		}
 
-		outs.conn, outs.targets = conn, outs.resolver.Known()
+		outs.UDP, outs.targets = conn, outs.resolver.Known()
 
 		l.Printf("udp: %s, sending to %s", spec.Describe(), outs.targets)
 	}
 
 	if c.com != "" {
 		// A missing port is opened once it is there.
-		outs.port = serial.Open(c.com, c.baudRate)
+		outs.Serial = serial.Open(c.com, c.baud)
 
 		l.Printf("nmea: RMC/GGA/GSA to %s", nmeaText(c))
 	}
@@ -161,7 +150,7 @@ func startFeed(parent context.Context, c *config, src input, l *log.Logger) (*ru
 		return nil, err
 	}
 
-	f := feed.New(outs.feedOutputs(c), l)
+	f := feed.New(outs.Outputs, l)
 	f.SetTargets(outs.targets)
 
 	ctx, cancel := context.WithCancel(parent)
@@ -175,7 +164,7 @@ func startFeed(parent context.Context, c *config, src input, l *log.Logger) (*ru
 
 	if c.spec.Dynamic() {
 		wg.Go(func() {
-			refreshTargets(ctx, targetRefresh, outs.resolver.Resolve, f.SetTargets, outs.targets, l)
+			outs.resolver.Refresh(ctx, targetRefresh, outs.targets, f.SetTargets)
 		})
 	}
 
@@ -189,8 +178,14 @@ func startFeed(parent context.Context, c *config, src input, l *log.Logger) (*ru
 	destinations := func() []string {
 		var lines []string
 
-		if outs.conn != nil {
-			lines = append(lines, "UDP: "+menuTargets(f.Targets()))
+		if outs.UDP != nil {
+			// Short, for the menu: without the default port.
+			t := targets.List(f.Targets()).Format(foreflight.Port)
+			if t == "" {
+				t = "no target yet"
+			}
+
+			lines = append(lines, "UDP: "+t)
 		}
 
 		if c.com != "" {
@@ -201,24 +196,6 @@ func startFeed(parent context.Context, c *config, src input, l *log.Logger) (*ru
 	}
 
 	return &running{feed: f, quit: quit.Done(), stop: stop, destinations: destinations}, nil
-}
-
-// menuTargets lists targets for the menu, short: without the default
-// port.
-func menuTargets(t []netip.AddrPort) string {
-	if len(t) == 0 {
-		return "no target yet"
-	}
-
-	s := make([]string, len(t))
-	for i, a := range t {
-		s[i] = a.String()
-		if a.Port() == foreflight.Port {
-			s[i] = a.Addr().String()
-		}
-	}
-
-	return strings.Join(s, ", ")
 }
 
 func runInput(
@@ -249,40 +226,6 @@ func runInput(
 		},
 		Failed: f.SetError,
 	})
-}
-
-// refreshTargets calls set with the result of resolve at once, for the
-// host names left out at the start, and then each time it changes,
-// checking every interval.
-func refreshTargets(
-	ctx context.Context,
-	every time.Duration,
-	resolve func(context.Context) targets.List,
-	set func([]netip.AddrPort),
-	current targets.List,
-	l *log.Logger,
-) {
-	tick := time.NewTicker(every)
-	defer tick.Stop()
-
-	for {
-		next := resolve(ctx)
-		if ctx.Err() != nil {
-			return // shutting down: lookups were cut short
-		}
-
-		if !slices.Equal(next, current) {
-			l.Printf("udp: sending to %s", next)
-			set(next)
-			current = next
-		}
-
-		select {
-		case <-ctx.Done():
-			return
-		case <-tick.C:
-		}
-	}
 }
 
 // insideArchive reports whether dir is where an archiver runs an exe opened

@@ -19,6 +19,7 @@ import (
 	"github.com/saschagrunert/skydemon-connect/internal/feed"
 	"github.com/saschagrunert/skydemon-connect/internal/icon"
 	"github.com/saschagrunert/skydemon-connect/internal/testutil"
+	"github.com/saschagrunert/skydemon-connect/internal/win"
 )
 
 func TestCopyUTF16(t *testing.T) {
@@ -182,7 +183,7 @@ func TestRun(t *testing.T) {
 	t.Parallel()
 
 	findWindow, sendMessage := user32.NewProc("FindWindowW"), user32.NewProc("SendMessageW")
-	class := utf16Ptr(className)
+	class := win.UTF16Ptr(className)
 	threadProcessID := user32.NewProc("GetWindowThreadProcessId")
 	ours := func(hwnd uintptr) bool {
 		var pid uint32
@@ -272,5 +273,50 @@ func TestRun(t *testing.T) {
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("Run did not return after the session ended")
+	}
+}
+
+// Without the icon, a balloon has nowhere to show: the latest one waits
+// until the icon is added, e.g. that SimConnect.dll is missing.
+func TestBalloonWithoutIcon(t *testing.T) {
+	t.Parallel()
+
+	noIcon := &tray{opts: Options{Log: testutil.Log(t)}}
+	noIcon.balloon(welcomeTitle, welcomeText, niifInfo)
+	noIcon.balloon(problemTitle, "SimConnect.dll not found", niifError)
+
+	want := balloonText{title: problemTitle, text: "SimConnect.dll not found", flags: niifError}
+	if noIcon.pending == nil || *noIcon.pending != want {
+		t.Errorf("pending %+v, want %+v", noIcon.pending, want)
+	}
+}
+
+// A queued problem balloon is dropped once the problem is over, so that
+// it doesn't pop up when the icon finally shows; other balloons stay.
+func TestStaleProblemBalloon(t *testing.T) {
+	t.Parallel()
+
+	stale := &tray{
+		opts:  Options{Feed: feed.New(feed.Outputs{}, testutil.Log(t)), Log: testutil.Log(t)},
+		icons: map[feed.Kind]uintptr{},
+		pending: &balloonText{
+			title: problemTitle,
+			text:  "SimConnect.dll not found",
+			flags: niifError,
+		},
+	}
+
+	stale.refresh() // no desktop: the icon isn't added
+
+	if stale.pending != nil {
+		t.Errorf("a problem that is over still pending: %+v", stale.pending)
+	}
+
+	welcome := balloonText{title: welcomeTitle, text: welcomeText, flags: niifInfo}
+	stale.pending = &welcome
+	stale.refresh()
+
+	if stale.pending == nil || *stale.pending != welcome {
+		t.Errorf("the welcome balloon was dropped: %+v", stale.pending)
 	}
 }

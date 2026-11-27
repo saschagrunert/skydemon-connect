@@ -1,6 +1,9 @@
 package targets_test
 
 import (
+	"io"
+	"log"
+	"net/netip"
 	"strings"
 	"testing"
 
@@ -88,4 +91,72 @@ func TestAuto(t *testing.T) {
 	) {
 		t.Errorf("describe: %s", d)
 	}
+}
+
+// A target without a port gets the default one, a host name too.
+func TestParseDefaultPort(t *testing.T) {
+	t.Parallel()
+
+	s, err := targets.Parse("192.168.1.23,ipad.local", 49002)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if d := s.Describe(); d != "192.168.1.23:49002, ipad.local:49002" {
+		t.Errorf("describe: %s", d)
+	}
+}
+
+func TestFormat(t *testing.T) {
+	t.Parallel()
+
+	l := targets.List{
+		netip.MustParseAddrPort("127.0.0.1:49002"),
+		netip.MustParseAddrPort("192.168.1.23:4000"),
+	}
+
+	for omit, want := range map[uint16]string{
+		0:     "127.0.0.1:49002, 192.168.1.23:4000",
+		49002: "127.0.0.1, 192.168.1.23:4000",
+	} {
+		if got := l.Format(omit); got != want {
+			t.Errorf("Format(%d) = %q, want %q", omit, got, want)
+		}
+	}
+
+	if got := l.String(); got != l.Format(0) {
+		t.Errorf("String %q", got)
+	}
+
+	if got := (targets.List{}).Format(49002); got != "" {
+		t.Errorf("empty: %q", got)
+	}
+}
+
+// Parse never panics, and what it accepts describes and resolves without
+// a lookup for literal addresses.
+func FuzzParse(f *testing.F) {
+	for _, s := range []string{
+		"auto", "auto,192.168.1.23:49002", "ipad.local", "127.0.0.1:0", "[::1]:49002",
+		" , ", "auto:4000", "a-b.c:65535", "1.2.3.4:5:6", "192.168.1.300",
+	} {
+		f.Add(s)
+	}
+
+	f.Fuzz(func(t *testing.T, list string) {
+		s, err := targets.Parse(list, 49002)
+		if err != nil {
+			return
+		}
+
+		_ = s.Describe()
+
+		if !s.Dynamic() {
+			for _, a := range s.Resolver(log.New(io.Discard, "", 0)).Known() {
+				if !a.Addr().Is4() || a.Port() == 0 {
+					t.Errorf("%q: target %v", list, a)
+				}
+			}
+		}
+	})
 }

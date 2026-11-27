@@ -61,7 +61,7 @@ func TestAddRemove(t *testing.T) {
 
 	path := `C:\Users\sascha\Sim Tools & Co\SkyDemonConnect.exe`
 
-	out, err := add(sample, path, autoArg, latin1)
+	out, err := add(sample, path, autoArg, cp1252)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -81,7 +81,7 @@ func TestAddRemove(t *testing.T) {
 
 	wellFormed(t, out)
 
-	again, err := add(out, path, autoArg, latin1)
+	again, err := add(out, path, autoArg, cp1252)
 	if err != nil || strings.Count(again, "<Name>SkyDemonConnect</Name>") != 1 {
 		t.Errorf("adding twice should keep one entry (err %v)", err)
 	}
@@ -103,7 +103,7 @@ func TestAddLayouts(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			out, err := add(tc.doc, `C:\x.exe`, autoArg, latin1)
+			out, err := add(tc.doc, `C:\x.exe`, autoArg, cp1252)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -120,7 +120,7 @@ func TestAddLayouts(t *testing.T) {
 		})
 	}
 
-	_, err := add("<foo/>", `C:\x.exe`, autoArg, latin1)
+	_, err := add("<foo/>", `C:\x.exe`, autoArg, cp1252)
 	if err == nil {
 		t.Error("a file without </SimBase.Document> must be refused")
 	}
@@ -320,7 +320,7 @@ func TestFind(t *testing.T) {
 func TestSetWrites(t *testing.T) {
 	t.Parallel()
 
-	withEntry, err := add(sample, `C:\x.exe`, autoArg+" -com COM1", latin1)
+	withEntry, err := add(sample, `C:\x.exe`, autoArg+" -com COM1", cp1252)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -340,11 +340,12 @@ func TestSetWrites(t *testing.T) {
 			want: []string{"<CommandLine>-auto -name=a&#xFFFD;b</CommandLine>"},
 		},
 		{
-			// Characters outside Windows-1252 become references.
+			// Characters outside Windows-1252 become references; its own
+			// at 0x80 to 0x9F, e.g. € and Š, are its bytes.
 			name: "references",
 			doc:  sample,
-			exe:  `C:\Users\Łukasz €\SkyDemonConnect.exe`,
-			want: []string{`<Path>C:\Users\&#x141;ukasz &#x20AC;\SkyDemonConnect.exe</Path>`},
+			exe:  `C:\Users\Łukasz €\Šárka\SkyDemonConnect.exe`,
+			want: []string{"<Path>C:\\Users\\&#x141;ukasz \x80\\\x8a\xe1rka\\SkyDemonConnect.exe</Path>"},
 		},
 		{
 			name: "UTF-8 keeps characters",
@@ -448,7 +449,7 @@ func TestSetWrites(t *testing.T) {
 func TestDisabledEntry(t *testing.T) {
 	t.Parallel()
 
-	out, err := add(sample, `C:\x.exe`, autoArg, latin1)
+	out, err := add(sample, `C:\x.exe`, autoArg, cp1252)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -463,7 +464,7 @@ func TestDisabledEntry(t *testing.T) {
 		t.Error("a disabled entry counts as enabled")
 	}
 
-	on, err := add(off, `C:\x.exe`, autoArg, latin1)
+	on, err := add(off, `C:\x.exe`, autoArg, cp1252)
 	if err != nil || !has(on, `C:\x.exe`, autoArg) || strings.Count(on, entryName) != 1 {
 		t.Errorf("enabling must replace the disabled entry (err %v):\n%s", err, on)
 	}
@@ -488,7 +489,7 @@ func TestCommentedEntry(t *testing.T) {
 		t.Error("remove changed a comment")
 	}
 
-	out, err := add(doc, `C:\x.exe`, autoArg, latin1)
+	out, err := add(doc, `C:\x.exe`, autoArg, cp1252)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -651,7 +652,7 @@ func TestMalformedOtherEntry(t *testing.T) {
 	// found on its own, and removing it must keep the other's text.
 	broken := strings.Replace(sample, "\t</Launch.Addon>\r\n", "", 1)
 
-	out, err := add(broken, `C:\x.exe`, autoArg, latin1)
+	out, err := add(broken, `C:\x.exe`, autoArg, cp1252)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -668,7 +669,7 @@ func TestMalformedOtherEntry(t *testing.T) {
 func TestDisabledInComment(t *testing.T) {
 	t.Parallel()
 
-	out, err := add(sample, `C:\x.exe`, autoArg, latin1)
+	out, err := add(sample, `C:\x.exe`, autoArg, cp1252)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -689,7 +690,7 @@ func TestEntityInPath(t *testing.T) {
 
 	const exe = `C:\Sim Tools & Co\SkyDemonConnect.exe`
 
-	out, err := add(sample, exe, autoArg, latin1)
+	out, err := add(sample, exe, autoArg, cp1252)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -892,7 +893,7 @@ func TestSaveIfUnchanged(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err = save(path, []byte("before"), []byte("ours"), true)
+	err = save(path, []byte("before"), []byte("before"), []byte("ours"))
 	if !errors.Is(err, errChanged) || readFile(t, path) != "theirs" {
 		t.Errorf("err %v, file %q", err, readFile(t, path))
 	}
@@ -901,7 +902,7 @@ func TestSaveIfUnchanged(t *testing.T) {
 		t.Errorf("backed up although nothing was changed: %q", left)
 	}
 
-	err = save(path, []byte("theirs"), []byte("ours"), true)
+	err = save(path, []byte("theirs"), []byte("theirs"), []byte("ours"))
 	if err != nil || readFile(t, path) != "ours" {
 		t.Errorf("err %v, file %q", err, readFile(t, path))
 	}
@@ -1044,5 +1045,217 @@ func TestSetBrokenSymlink(t *testing.T) {
 	fi, err := os.Lstat(store)
 	if err != nil || fi.Mode()&os.ModeSymlink == 0 {
 		t.Errorf("the link was replaced: %v %v", fi, err)
+	}
+}
+
+// A Set that worked for Store but failed for Steam leaves Other, not
+// Ours: the next click then completes the entry instead of removing the
+// one Store has. Store's file, already ours, isn't written again.
+func TestSetRetryAfterPartialFailure(t *testing.T) {
+	t.Parallel()
+
+	installs, store, steam := setup(t)
+	exe := `C:\x.exe`
+
+	// Store: our entry before another add-on's, so that writing it again
+	// would move it to the end.
+	ours, err := add(sample, exe, autoArg, cp1252)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	storeDoc := strings.Replace(ours, "</SimBase.Document>",
+		"\t<Launch.Addon>\r\n\t\t<Name>Other</Name>\r\n\t</Launch.Addon>\r\n</SimBase.Document>", 1)
+
+	for path, doc := range map[string]string{store: storeDoc, steam: sample} {
+		err = os.WriteFile(path, []byte(doc), 0o600)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Steam's backup can't be written, so adding to it failed.
+	err = os.Mkdir(steam+backupExt, 0o750)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = installs.Set(true, exe, nil)
+	if !errors.Is(err, errNotFile) {
+		t.Fatalf("Set with Steam's backup a folder: %v", err)
+	}
+
+	if got := installs.State(exe, nil); got != Other {
+		t.Fatalf("entry in one of two files: %v, want Other", got)
+	}
+
+	// The backup is fixed; the click enables, as for Other.
+	err = os.Remove(steam + backupExt)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = installs.Set(true, exe, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got := readFile(t, store); got != storeDoc {
+		t.Errorf("Store's file, already ours, was written again:\n%s", got)
+	}
+
+	if got := installs.State(exe, nil); got != Ours {
+		t.Errorf("after the retry: %v, want Ours", got)
+	}
+}
+
+// State leaves out a file it can't read, and counts the others.
+func TestStateSkipsUnreadable(t *testing.T) {
+	t.Parallel()
+
+	installs, store, _ := setup(t)
+	exe := `C:\x.exe`
+
+	err := (Installs{store}).Set(true, exe, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	unreadable := filepath.Join(t.TempDir(), "exe.xml")
+
+	err = os.Mkdir(unreadable, 0o750) // reading a directory fails
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got := (Installs{unreadable, store}).State(exe, nil); got != Ours {
+		t.Errorf("with an unreadable file: %v, want Ours", got)
+	}
+
+	if got := (Installs{unreadable}).State(exe, nil); got != Absent {
+		t.Errorf("only an unreadable file: %v, want Absent", got)
+	}
+
+	if got := installs.State(exe, nil); got != Other {
+		t.Errorf("in Store only: %v, want Other", got)
+	}
+}
+
+// A file that wasn't there is backed up as one without entries: the
+// "original" never holds our entry, also after a later disable.
+func TestBackupOfNewFile(t *testing.T) {
+	t.Parallel()
+
+	_, store, _ := setup(t)
+	installs := Installs{store}
+
+	for _, enable := range []bool{true, false} {
+		err := installs.Set(enable, `C:\x.exe`, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if got := readFile(t, store+backupExt); got != skeleton {
+		t.Errorf("first backup:\n%s", got)
+	}
+
+	// The latest backup is from before the disable, with the entry.
+	if got := readFile(t, store+prevExt); !strings.Contains(got, entryName) {
+		t.Errorf("latest backup:\n%s", got)
+	}
+}
+
+// Nothing to do writes nothing: no file, no backup.
+func TestSetNoChange(t *testing.T) {
+	t.Parallel()
+
+	_, store, _ := setup(t)
+	installs := Installs{store}
+
+	// Removing from a file without our entry.
+	err := os.WriteFile(store, []byte(sample), 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = installs.Set(false, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	left, _ := filepath.Glob(store + ".*")
+	if len(left) != 0 || readFile(t, store) != sample {
+		t.Errorf("removing nothing wrote %q", left)
+	}
+}
+
+// A file Set couldn't add to, e.g. one without </SimBase.Document>, is
+// left out of State: otherwise the entry in the other one would read as
+// Other for good, and a click could never remove it.
+func TestStateLeavesOutRefusedFile(t *testing.T) {
+	t.Parallel()
+
+	installs, store, steam := setup(t)
+	exe := `C:\x.exe`
+
+	err := os.WriteFile(steam, []byte("<foo/>"), 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = (Installs{store}).Set(true, exe, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got := installs.State(exe, nil); got != Ours {
+		t.Fatalf("with a file Set refuses: %v, want Ours", got)
+	}
+
+	err = installs.Set(false, exe, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got := installs.State(exe, nil); got != Absent {
+		t.Errorf("after removing: %v, want Absent", got)
+	}
+}
+
+// Two entries of ours, e.g. one left from an older version after the
+// current one, read as Other, and Set leaves one.
+func TestDuplicateEntry(t *testing.T) {
+	t.Parallel()
+
+	_, store, _ := setup(t)
+	installs := Installs{store}
+	exe := `C:\x.exe`
+
+	ours, err := add(sample, exe, autoArg, cp1252)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	old := strings.Replace(ours, "</SimBase.Document>",
+		"\t<Launch.Addon>\r\n\t\t<Name>SkyDemonConnect</Name>\r\n"+
+			"\t\t<Path>C:\\Old\\SkyDemonConnect.exe</Path>\r\n\t</Launch.Addon>\r\n</SimBase.Document>", 1)
+
+	err = os.WriteFile(store, []byte(old), 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got := installs.State(exe, nil); got != Other {
+		t.Errorf("two entries: %v, want Other", got)
+	}
+
+	err = installs.Set(true, exe, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got := readFile(t, store); got != ours {
+		t.Errorf("after Set:\n%s", got)
 	}
 }

@@ -33,8 +33,10 @@ var (
 	errNoOut = errors.New("nothing to do: set -udp and/or -com")
 	errArg   = errors.New("options start with a dash, e.g. -demo; -udp takes one" +
 		" comma-separated list (in PowerShell, put it in quotes)")
+	errUnknown   = errors.New("unknown option")
 	errQuiet     = errors.New("-quiet only works with -console")
 	errBaudNoCom = errors.New("-baud only works with -com")
+	errDemoPlace = errors.New("-demo-lat and -demo-lon only work with -demo")
 	errName      = fmt.Errorf(
 		"-name must be 1 to %d printable ASCII characters, no commas",
 		maxName,
@@ -48,11 +50,10 @@ type config struct {
 	spec *targets.Spec
 	// passOn are the options "Start with MSFS" writes to exe.xml, so that
 	// MSFS starts the app as it was started now, e.g. "-name=My Sim".
-	passOn         []string
-	udp, name, com string
-	baud           int
-	// baudRate is baud, checked.
-	baudRate         uint32
+	passOn    []string
+	name, com string
+	// baud is -baud, checked.
+	baud             uint32
 	demoLat, demoLon float64
 	noAttitude, demo bool
 	quiet, console   bool
@@ -60,15 +61,66 @@ type config struct {
 	version          bool
 }
 
+// given are the options as given, which validate checks into a config.
+type given struct {
+	udp  string
+	baud int
+	// set holds the names of the options given.
+	set map[string]bool
+	// rest are the arguments after the options.
+	rest []string
+}
+
 // parseFlags parses args. On -help it also returns the options' help, on
 // an error the error and how to see that help.
 func parseFlags(args []string) (config, string, error) {
-	var c config
+	var (
+		c    config
+		opts given
+	)
 
 	fs := flag.NewFlagSet("SkyDemonConnect", flag.ContinueOnError)
 	fs.SetOutput(io.Discard) // the errors are returned, the help built below
 	fs.Usage = func() {}
 
+	local := define(fs, &c, &opts)
+
+	err := fs.Parse(args)
+	if errors.Is(err, flag.ErrHelp) {
+		return c, help(fs), err
+	}
+
+	opts.set, opts.rest = map[string]bool{}, fs.Args()
+
+	fs.Visit(func(f *flag.Flag) {
+		opts.set[f.Name] = true
+
+		// A flag given at its default changes nothing: leaving it out
+		// keeps exe.xml matching a plain start.
+		if !local[f.Name] && f.Value.String() != f.DefValue {
+			c.passOn = append(c.passOn, "-"+f.Name+"="+f.Value.String())
+		}
+	})
+
+	if err == nil {
+		err = validate(&c, &opts)
+	} else {
+		err = friendly(err)
+	}
+
+	if err != nil {
+		return c, err.Error() + "\n\nRun with -help to see the options.", fmt.Errorf(
+			"parse flags: %w",
+			err,
+		)
+	}
+
+	return c, "", nil
+}
+
+// define defines the options on fs, into c and opts. It returns the local
+// ones.
+func define(fs *flag.FlagSet, c *config, opts *given) map[string]bool {
 	// local marks the options that only make sense for this start, not for
 	// MSFS's: "Start with MSFS" doesn't pass them on.
 	local := map[string]bool{}
@@ -78,16 +130,16 @@ func parseFlags(args []string) (config, string, error) {
 		return name
 	}
 
-	fs.StringVar(&c.udp, "udp", targets.Auto,
-		"comma-separated UDP targets (host:port) for XGPS/XATT; -udp= disables UDP (with -com). "+
-			`"auto" is this PC and every local network (Wi-Fi tablets), port `+
-			strconv.Itoa(foreflight.Port))
+	fs.StringVar(&opts.udp, "udp", targets.Auto,
+		"comma-separated UDP targets (host or host:port) for XGPS/XATT, port "+
+			strconv.Itoa(foreflight.Port)+" if left out; -udp= disables UDP (with -com). "+
+			`"auto" is this PC and every local network (Wi-Fi tablets)`)
 	fs.BoolVar(&c.noAttitude, "no-xatt", false, "don't send XATT attitude messages")
 	fs.StringVar(&c.name, "name", "MSFS",
 		"simulator name in XGPS/XATT messages, up to "+strconv.Itoa(maxName)+
 			" ASCII characters, no commas")
 	fs.StringVar(&c.com, "com", "", "COM port for NMEA output, e.g. COM11")
-	fs.IntVar(&c.baud, "baud", defaultBaud, "COM port baud rate (with -com)")
+	fs.IntVar(&opts.baud, "baud", defaultBaud, "COM port baud rate (with -com)")
 	fs.BoolVar(&c.demo, localFlag("demo"), false,
 		"fly a 100 kt circle without MSFS, to test SkyDemon")
 	fs.Float64Var(&c.demoLat, localFlag("demo-lat"), defaultDemoLat, "demo circle centre latitude")
@@ -99,35 +151,18 @@ func parseFlags(args []string) (config, string, error) {
 			" exit when MSFS closes")
 	fs.BoolVar(&c.version, localFlag("version"), false, "show the version and exit")
 
-	err := fs.Parse(args)
-	if errors.Is(err, flag.ErrHelp) {
-		return c, help(fs), err
+	return local
+}
+
+// friendly rewords flag's own error for an option that doesn't exist.
+func friendly(err error) error {
+	const undefined = "flag provided but not defined: "
+
+	if name, ok := strings.CutPrefix(err.Error(), undefined); ok {
+		return fmt.Errorf("%w %s", errUnknown, name)
 	}
 
-	set := map[string]bool{}
-
-	fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
-
-	if err == nil {
-		err = validate(&c, fs.Args(), set)
-	}
-
-	if err != nil {
-		return c, err.Error() + "\n\nRun with -help to see the options.", fmt.Errorf(
-			"parse flags: %w",
-			err,
-		)
-	}
-
-	fs.Visit(func(f *flag.Flag) {
-		// A flag given at its default changes nothing: leaving it out
-		// keeps exe.xml matching a plain start.
-		if !local[f.Name] && f.Value.String() != f.DefValue {
-			c.passOn = append(c.passOn, "-"+f.Name+"="+f.Value.String())
-		}
-	})
-
-	return c, "", nil
+	return err
 }
 
 // help lists the options for -help, readable in a message box too: flag's
@@ -150,28 +185,42 @@ func help(fs *flag.FlagSet) string {
 	return b.String()
 }
 
-// validate checks the options; set holds the names of those given.
-func validate(c *config, rest []string, set map[string]bool) error {
+// validate checks the options opts and completes c from them.
+func validate(c *config, opts *given) error {
 	switch {
-	case len(rest) > 0:
-		return fmt.Errorf("unexpected argument %q: %w", rest[0], errArg)
+	case len(opts.rest) > 0:
+		return fmt.Errorf("unexpected argument %q: %w", opts.rest[0], errArg)
 	case c.quiet && !c.console && runtime.GOOS == "windows":
 		return errQuiet
 	case !validName(c.name):
 		return errName
+	}
+
+	err := validateDemo(c, opts)
+	if err != nil {
+		return err
+	}
+
+	return validateOutputs(c, opts)
+}
+
+// validateDemo checks -demo-lat and -demo-lon.
+func validateDemo(c *config, opts *given) error {
+	switch {
+	case (opts.set["demo-lat"] || opts.set["demo-lon"]) && !c.demo:
+		return errDemoPlace
 	case math.IsNaN(c.demoLat) || math.Abs(c.demoLat) > maxDemoLat:
 		return errDemoLat
 	case math.IsNaN(c.demoLon) || math.Abs(c.demoLon) > maxLon:
 		return errDemoLon
 	}
 
-	return validateOutputs(c, set["baud"])
+	return nil
 }
 
-// validateOutputs checks -udp, -com and -baud, and keeps -udp parsed;
-// baudSet is whether -baud was given.
-func validateOutputs(c *config, baudSet bool) error {
-	spec, err := targets.Parse(c.udp, foreflight.Port)
+// validateOutputs checks -udp, -com and -baud into c.
+func validateOutputs(c *config, opts *given) error {
+	spec, err := targets.Parse(opts.udp, foreflight.Port)
 	if err != nil {
 		return fmt.Errorf("-udp: %w", err)
 	}
@@ -182,12 +231,12 @@ func validateOutputs(c *config, baudSet bool) error {
 
 	c.spec = spec
 
-	c.baudRate, err = serial.CheckBaud(c.baud)
+	c.baud, err = serial.CheckBaud(opts.baud)
 	if err != nil {
 		return fmt.Errorf("-baud: %w", err)
 	}
 
-	if baudSet && c.com == "" {
+	if opts.set["baud"] && c.com == "" {
 		return errBaudNoCom
 	}
 

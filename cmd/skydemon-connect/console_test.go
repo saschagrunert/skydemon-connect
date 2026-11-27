@@ -33,6 +33,22 @@ func TestStatusLine(t *testing.T) {
 	}
 }
 
+// A status longer than the line is cut to it, so that a shorter one
+// written over it leaves nothing behind.
+func TestStatusLineCuts(t *testing.T) {
+	t.Parallel()
+
+	var out bytes.Buffer
+
+	s := &statusLine{out: &out}
+	s.show("Error: " + strings.Repeat("é", 2*statusWidth))
+
+	want := "\rError: " + strings.Repeat("é", statusWidth-len("Error: ")-1) + "…"
+	if got := out.String(); got != want {
+		t.Errorf("output %q, want %q", got, want)
+	}
+}
+
 func TestRunConsole(t *testing.T) {
 	t.Parallel()
 

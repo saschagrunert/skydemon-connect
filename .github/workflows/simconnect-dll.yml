@@ -1,0 +1,47 @@
+name: simconnect-dll
+# The real SimConnect.dll on Windows, for ci (its own bundle) and release
+# (the zip it ships): every function the app uses is bound, and without
+# MSFS an open fails as the app expects.
+on:
+  workflow_call:
+    inputs:
+      artifact:
+        description: the artifact holding build/sdk-*/SimConnect.dll, uploaded with that wildcard
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  test:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version-file: go.mod
+          cache: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ${{ inputs.artifact }}
+          path: dll
+      # The artifact keeps the path below the upload's wildcard, e.g.
+      # sdk-1.8.2/SimConnect.dll.
+      - run: |
+          shopt -s nullglob
+          dlls=(dll/*/SimConnect.dll)
+          if (( ${#dlls[@]} != 1 )); then
+            echo "::error::want one SimConnect.dll in the artifact, got: ${dlls[*]}"
+            exit 1
+          fi
+          SKYDEMONCONNECT_SIMCONNECT_DLL="$(cygpath -w "$PWD/${dlls[0]}")"
+          export SKYDEMONCONNECT_SIMCONNECT_DLL
+          go test -count=1 -run TestRealDLL -v ./internal/simconnect

@@ -36,13 +36,7 @@ const (
 	tooltipTitle = "SkyDemonConnect\n"
 	// tooltipRoom is NOTIFYICONDATAW's Tip less its NUL.
 	tooltipRoom = 127
-	// errorPrefix is what feed.Status.String puts before an error.
-	errorPrefix = feed.ErrorPrefix
 )
-
-// MaxErrLen is the room for a status error, feed.Status.Err, in the tray's
-// tooltip after its title and the error prefix; longer errors are cut.
-const MaxErrLen = tooltipRoom - len(tooltipTitle) - len(errorPrefix)
 
 // tooltip is the tooltip text for a status, as feed.Status.String gives it.
 func tooltip(status string) string { return tooltipTitle + status }
@@ -107,9 +101,10 @@ const (
 // Start with MSFS menu texts.
 const (
 	startText = "Start with MSFS"
-	// otherText: an entry exists for another copy or other options, or is
-	// disabled; clicking replaces it with this copy's.
-	otherText = "Start with MSFS (another or disabled entry)"
+	// otherText: an entry exists, but for another copy or other options,
+	// or disabled, or only in some of the exe.xml files; clicking sets
+	// this copy's up everywhere.
+	otherText = "Start with MSFS (not set up for this copy, click to fix)"
 	// noExeText: without the exe's own path, there is nothing to write.
 	noExeText = "Start with MSFS (exe path unknown)"
 )

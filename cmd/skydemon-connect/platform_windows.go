@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"log"
 	"os"
 	"path/filepath"
 	"runtime/debug"
@@ -24,12 +25,22 @@ func prepare() { win.RestrictDLLSearch() }
 // run starts the tray, or a console window with -console. The binary is
 // built for the GUI subsystem, so without -console no window appears.
 func run(c *config) int {
+	// Without the exe's path, "Start with MSFS" is off and the log goes to
+	// %LOCALAPPDATA%, not to MSFS's folder.
+	exe, err := os.Executable()
+	if err != nil {
+		exe = ""
+	}
+
 	// One instance only: a double-click and exe.xml would otherwise both
 	// send. Checked before the log is opened, so as not to touch the
 	// running instance's log.
 	if win.AlreadyRunning() {
 		switch {
 		case c.auto:
+			// Started by MSFS, so silently: a log of its own says why
+			// nothing happened.
+			logAlreadyRunning(exe)
 		case len(os.Args) > 1:
 			win.ShowInfo("SkyDemonConnect is already running; quit it to start it with " +
 				"these options. " + tray.IconHint)
@@ -38,13 +49,6 @@ func run(c *config) int {
 		}
 
 		return 0
-	}
-
-	// Without the exe's path, "Start with MSFS" is off and the log goes to
-	// %LOCALAPPDATA%, not to MSFS's folder.
-	exe, err := os.Executable()
-	if err != nil {
-		exe = ""
 	}
 
 	// Run from inside the zip, the DLL is missing and "Start with MSFS"
@@ -61,6 +65,31 @@ func run(c *config) int {
 
 	return runTray(c, exe)
 }
+
+// logAlreadyRunning logs, to a log of this process's own, that another
+// copy runs, which an -auto start doesn't show.
+func logAlreadyRunning(exe string) {
+	f := openOwnLog(logDirs(exe)...)
+	if f == nil {
+		return
+	}
+
+	newLogger(f).Printf("SkyDemonConnect %s: another copy is running; exiting", version)
+
+	_ = f.Close()
+}
+
+// watchMSFS returns a context that is done when MSFS, which started this
+// copy with -auto, exits, and whether MSFS is watched.
+func watchMSFS(ctx context.Context, l *log.Logger) (context.Context, bool) {
+	return win.UntilMSFSExits(ctx, l)
+}
+
+// onSessionEnd calls fn at logoff or shutdown, before Windows ends the
+// process. Without it, which only a failing window leads to, the app is
+// ended as before: the sim's session times out, the COM port is closed by
+// Windows.
+func onSessionEnd(fn func()) { _ = win.OnSessionEnd(fn) }
 
 // runConsoleWindow runs the console mode in a console window of its own.
 // Errors are shown in a message box too: the window closes on exit.
@@ -122,7 +151,7 @@ func runTray(c *config, exe string) int {
 
 	ctx, watched := context.Background(), false
 	if c.auto {
-		ctx, watched = win.UntilMSFSExits(ctx, l)
+		ctx, watched = watchMSFS(ctx, l)
 	}
 
 	r, err := startFeed(
@@ -159,6 +188,7 @@ func runTray(c *config, exe string) int {
 		return exitError
 	}
 
+	r.stop() // before "bye": the log then ends with the shutdown
 	l.Printf("bye")
 
 	return 0
