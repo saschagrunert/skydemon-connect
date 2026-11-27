@@ -12,6 +12,7 @@ import (
 	"runtime/debug"
 	"strings"
 	"syscall"
+	"time"
 	"unsafe"
 
 	"github.com/saschagrunert/skydemon-connect/internal/simconnect"
@@ -20,13 +21,24 @@ import (
 
 // tempDirText is shown when the exe runs from inside an archive.
 const tempDirText = "SkyDemonConnect is running from inside the zip or a temporary folder." +
-	` Extract the zip to a folder of its own first, e.g. C:\Tools\SkyDemonConnect.`
+	` Extract the zip to a folder of its own first, e.g. %LOCALAPPDATA%\Programs\SkyDemonConnect.`
 
 var errNotWatched = errors.New("not the process to watch")
+
+// restrictDLLSearch makes libraries that load other DLLs later, e.g.
+// SimConnect.dll or shell extensions, find them in the exe's folder and
+// System32 only, not in the working directory (MSFS's, with -auto) or PATH.
+func restrictDLLSearch() {
+	const searchDefaultDirs = 0x00001000 // LOAD_LIBRARY_SEARCH_DEFAULT_DIRS
+
+	_, _, _ = procSetDefaultDllDirectories.Call(searchDefaultDirs)
+}
 
 // run starts the tray, or a console window with -console. The binary is
 // built for the GUI subsystem, so without -console no window appears.
 func run(c *config) int {
+	restrictDLLSearch()
+
 	// One instance only: a double-click and exe.xml would otherwise both
 	// send. Checked before the log is opened, so as not to touch the
 	// running instance's log.
@@ -43,9 +55,11 @@ func run(c *config) int {
 		return 0
 	}
 
+	// Without the exe's path, "Start with MSFS" is off and the log goes to
+	// %LOCALAPPDATA%, not to MSFS's folder.
 	exe, err := os.Executable()
 	if err != nil {
-		exe = "SkyDemonConnect.exe"
+		exe = ""
 	}
 
 	// Run from inside the zip, the DLL is missing and "Start with MSFS"
@@ -87,7 +101,11 @@ func runTray(c *config, exe string) int {
 	// The log lives next to the exe, as when started via exe.xml the
 	// working directory is MSFS's; in a read-only folder it moves to
 	// %LOCALAPPDATA%.
-	dirs := []string{filepath.Dir(exe)}
+	var dirs []string
+	if exe != "" {
+		dirs = append(dirs, filepath.Dir(exe))
+	}
+
 	if local := os.Getenv("LOCALAPPDATA"); local != "" {
 		dirs = append(dirs, filepath.Join(local, "SkyDemonConnect"))
 	}
@@ -123,19 +141,21 @@ func runTray(c *config, exe string) int {
 	defer r.stop()
 
 	err = tray.Run(&tray.Options{
-		Feed:       r.feed,
-		Quit:       r.quit,
-		MSFS:       nil, // found when needed
-		AutoArgs:   c.passOn,
-		SessionEnd: r.stop,
-		Version:    version,
-		LogPath:    logPath,
-		ExePath:    exe,
-		Log:        l,
-		Auto:       c.auto,
+		Feed:         r.feed,
+		Quit:         r.quit,
+		MSFS:         nil, // found when needed
+		AutoArgs:     c.passOn,
+		Destinations: r.destinations,
+		SessionEnd:   r.stop,
+		Version:      version,
+		LogPath:      logPath,
+		ExePath:      exe,
+		Log:          l,
+		Auto:         c.auto,
 	})
 	if err != nil {
 		l.Printf("tray: %v", err)
+		r.stop() // nothing is sent while the error shows
 		tray.ShowError(err.Error())
 
 		return exitError
@@ -151,8 +171,9 @@ func runTray(c *config, exe string) int {
 // SimConnect ever answered. A parent that isn't MSFS, e.g. a launcher that
 // exits right away, is not watched; the bool reports whether it is.
 func untilMSFSExits(ctx context.Context, l *log.Logger) (context.Context, bool) {
-	isMSFS := func(path string) bool {
-		return strings.HasPrefix(strings.ToLower(filepath.Base(path)), "flightsimulator")
+	isMSFS := func(h syscall.Handle, path string) bool {
+		return strings.HasPrefix(strings.ToLower(filepath.Base(path)), "flightsimulator") &&
+			startedBeforeUs(h)
 	}
 
 	ctx, err := watchProcess(ctx, os.Getppid(), isMSFS, l)
@@ -166,13 +187,13 @@ func untilMSFSExits(ctx context.Context, l *log.Logger) (context.Context, bool) 
 }
 
 // watchProcess returns a context that is done when process pid exits, if
-// accept accepts its executable's path; otherwise ctx and an error. The
-// watching goroutine lives as long as that process, which with -auto is as
-// long as the app.
+// accept accepts it and its executable's path; otherwise ctx and an
+// error. The watching goroutine lives as long as that process, which with
+// -auto is as long as the app.
 func watchProcess(
 	ctx context.Context,
 	pid int,
-	accept func(path string) bool,
+	accept func(h syscall.Handle, path string) bool,
 	l *log.Logger,
 ) (context.Context, error) {
 	const access = 0x00100000 | 0x1000 // SYNCHRONIZE, PROCESS_QUERY_LIMITED_INFORMATION
@@ -183,7 +204,7 @@ func watchProcess(
 	}
 
 	name := processName(h)
-	if !accept(name) {
+	if !accept(h, name) {
 		_ = syscall.CloseHandle(h)
 
 		return ctx, fmt.Errorf("%w: %q", errNotWatched, name)
@@ -194,7 +215,21 @@ func watchProcess(
 	go func() {
 		defer func() { _ = syscall.CloseHandle(h) }()
 
-		_, _ = syscall.WaitForSingleObject(h, syscall.INFINITE)
+		ev, err := syscall.WaitForSingleObject(h, syscall.INFINITE)
+		if ev != syscall.WAIT_OBJECT_0 {
+			// Not an exit. Without it, nothing would end the app with
+			// MSFS: poll the exit code instead.
+			l.Printf("auto: waiting for %s failed (%v), polling it", filepath.Base(name), err)
+
+			if !pollExit(ctx, h) {
+				if ctx.Err() == nil {
+					l.Printf("auto: can't check %s any more; it won't end the app",
+						filepath.Base(name))
+				}
+
+				return
+			}
+		}
 
 		l.Printf("auto: %s exited; exiting", filepath.Base(name))
 		cancel()
@@ -203,8 +238,61 @@ func watchProcess(
 	return ctx, nil
 }
 
-var procQueryFullProcessImageNameW = syscall.NewLazyDLL("kernel32.dll").
-	NewProc("QueryFullProcessImageNameW")
+// pollExit returns once process h exited, true, or ctx is done or the
+// exit code can't be read, false.
+func pollExit(ctx context.Context, h syscall.Handle) bool {
+	const (
+		stillActive = 259 // STILL_ACTIVE
+		every       = 5 * time.Second
+	)
+
+	tick := time.NewTicker(every)
+	defer tick.Stop()
+
+	for {
+		var code uint32
+
+		err := syscall.GetExitCodeProcess(h, &code)
+		if err != nil {
+			return false
+		}
+
+		if code != stillActive {
+			return true
+		}
+
+		select {
+		case <-ctx.Done():
+			return false
+		case <-tick.C:
+		}
+	}
+}
+
+var (
+	kernel32                       = syscall.NewLazyDLL("kernel32.dll")
+	procSetDefaultDllDirectories   = kernel32.NewProc("SetDefaultDllDirectories")
+	procQueryFullProcessImageNameW = kernel32.NewProc("QueryFullProcessImageNameW")
+)
+
+// startedBeforeUs reports whether process h started before this one, as
+// the parent that started us did. A parent PID can be reused by an
+// unrelated process once the parent exited; that one started later.
+func startedBeforeUs(h syscall.Handle) bool {
+	var theirs, ours, unused syscall.Filetime
+
+	self, err := syscall.GetCurrentProcess()
+	if err != nil {
+		return false
+	}
+
+	if syscall.GetProcessTimes(h, &theirs, &unused, &unused, &unused) != nil ||
+		syscall.GetProcessTimes(self, &ours, &unused, &unused, &unused) != nil {
+		return false
+	}
+
+	return theirs.Nanoseconds() <= ours.Nanoseconds()
+}
 
 // processName returns the path of a process's executable, or "".
 func processName(h syscall.Handle) string {

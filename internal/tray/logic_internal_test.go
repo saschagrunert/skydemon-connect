@@ -1,9 +1,11 @@
 package tray
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
+	"github.com/saschagrunert/skydemon-connect/internal/exexml"
 	"github.com/saschagrunert/skydemon-connect/internal/feed"
 )
 
@@ -82,9 +84,17 @@ func TestBalloonTexts(t *testing.T) {
 func TestMenu(t *testing.T) {
 	t.Parallel()
 
-	items := menu("v1.2.3", "Waiting for MSFS", true)
+	items := menu(&menuState{
+		version:      "v1.2.3",
+		status:       "Waiting for MSFS",
+		destinations: []string{"UDP: 127.0.0.1", "NMEA: COM11 at 115200"},
+		msfs:         exexml.Ours,
+		canStart:     true,
+	})
 
 	var ids []int
+
+	texts := make([]string, 0, len(items))
 
 	for _, item := range items {
 		if item.id != 0 {
@@ -94,18 +104,63 @@ func TestMenu(t *testing.T) {
 		if item.checked && item.id != idMSFS {
 			t.Errorf("%q is checked", item.text)
 		}
+
+		texts = append(texts, item.text)
 	}
 
-	if len(ids) != 3 || ids[0] != idMSFS || ids[1] != idLog || ids[2] != idQuit {
+	if !slices.Equal(ids, []int{idMSFS, idLog, idQuit}) {
 		t.Errorf("command IDs %v", ids)
 	}
 
-	if items[0].text != "SkyDemonConnect v1.2.3" || items[1].text != "Waiting for MSFS" ||
-		!items[3].checked {
-		t.Errorf("menu %+v", items)
+	want := []string{
+		"SkyDemonConnect v1.2.3", "Waiting for MSFS", "UDP: 127.0.0.1", "NMEA: COM11 at 115200",
+		"", startText, "Open log", "", "Quit",
+	}
+	if !slices.Equal(texts, want) {
+		t.Errorf("menu %q, want %q", texts, want)
+	}
+}
+
+func TestMenuStartWithMSFS(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		msfs     exexml.State
+		canStart bool
+		text     string
+		id       int
+		checked  bool
+	}{
+		{exexml.Ours, true, startText, idMSFS, true},
+		{exexml.Absent, true, startText, idMSFS, false},
+		{exexml.Other, true, otherText, idMSFS, false}, // a click replaces it
+		{exexml.Ours, false, noExeText, 0, false},      // disabled
+	} {
+		items := menu(&menuState{msfs: tc.msfs, canStart: tc.canStart})
+
+		i := slices.IndexFunc(
+			items,
+			func(m menuItem) bool { return m.id == idMSFS || m.text == noExeText },
+		)
+		if i < 0 {
+			t.Fatalf("%v: no Start with MSFS item", tc.msfs)
+		}
+
+		if got := items[i]; got.text != tc.text || got.id != tc.id || got.checked != tc.checked {
+			t.Errorf("%v, canStart %v: %+v", tc.msfs, tc.canStart, got)
+		}
+	}
+}
+
+func TestAddedMessage(t *testing.T) {
+	t.Parallel()
+
+	if got := addedMessage(nil); got != "Options: none. "+addedText {
+		t.Errorf("without options: %q", got)
 	}
 
-	if menu("v1", "", false)[3].checked {
-		t.Error("Start with MSFS checked while off")
+	got := addedMessage([]string{"-udp=auto,192.168.1.23:49002", "-com=COM11"})
+	if !strings.HasPrefix(got, "Options: -udp=auto,192.168.1.23:49002 -com=COM11. ") {
+		t.Errorf("with options: %q", got)
 	}
 }

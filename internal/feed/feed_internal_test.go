@@ -3,6 +3,7 @@ package feed
 import (
 	"context"
 	"errors"
+	"io"
 	"log"
 	"math"
 	"net/netip"
@@ -131,34 +132,44 @@ func newFeed(out Outputs) (*Feed, *testutil.Buffer) {
 	return New(out, log.New(&logs, "", 0)), &logs
 }
 
+// sendSettled sends s, and again once outputSettle has passed, so that a
+// failure or a recovery counts. It runs in a synctest bubble.
+func sendSettled(f *Feed, s position.Sample) {
+	f.send(s, time.Now())
+	time.Sleep(outputSettle)
+	f.send(s, time.Now())
+}
+
 func TestSendUDP(t *testing.T) {
 	t.Parallel()
 
-	u := &fakeUDP{}
-	u.setFail(target(2))
+	synctest.Test(t, func(t *testing.T) {
+		u := &fakeUDP{}
+		u.setFail(target(2))
 
-	f, logs := newFeed(Outputs{UDP: u, Name: "T"})
-	f.SetTargets([]netip.AddrPort{target(1), target(2), target(3)})
-	f.send(flying(), time.Now())
-	f.send(flying(), time.Now())
+		f, logs := newFeed(Outputs{UDP: u, Name: "T"})
+		f.SetTargets([]netip.AddrPort{target(1), target(2), target(3)})
+		sendSettled(f, flying())
+		f.send(flying(), time.Now())
 
-	want := []string{"XGPS", "XATT", "XGPS", "XATT"}
-	for _, to := range []netip.AddrPort{target(1), target(3)} {
-		if got := u.kinds(to); !slices.Equal(got, want) {
-			t.Errorf("to %v: got %v, want %v", to, got, want)
+		want := []string{"XGPS", "XATT", "XGPS", "XATT", "XGPS", "XATT"}
+		for _, to := range []netip.AddrPort{target(1), target(3)} {
+			if got := u.kinds(to); !slices.Equal(got, want) {
+				t.Errorf("to %v: got %v, want %v", to, got, want)
+			}
 		}
-	}
 
-	if got := u.kinds(target(2)); len(got) != 0 {
-		t.Errorf("failing target: %v", got)
-	}
+		if got := u.kinds(target(2)); len(got) != 0 {
+			t.Errorf("failing target: %v", got)
+		}
 
-	if n := strings.Count(logs.String(), "feed: udp 192.0.2.2:49002: boom"); n != 1 {
-		t.Errorf("failure logged %d times, want 1: %q", n, logs)
-	}
+		if n := strings.Count(logs.String(), "feed: udp 192.0.2.2:49002: boom"); n != 1 {
+			t.Errorf("failure logged %d times, want 1: %q", n, logs)
+		}
+	})
 
-	u = &fakeUDP{}
-	f, _ = newFeed(Outputs{UDP: u, Name: "T", NoAttitude: true})
+	u := &fakeUDP{}
+	f, _ := newFeed(Outputs{UDP: u, Name: "T", NoAttitude: true})
 	f.SetTargets([]netip.AddrPort{target(1)})
 	f.send(flying(), time.Now())
 
@@ -203,15 +214,17 @@ func TestUDPFailures(t *testing.T) {
 				out.Serial = &serialWriter{}
 			}
 
-			f, _ := newFeed(out)
-			f.SetTargets(tc.targets)
-			f.SetLive(true)
-			f.Update(flying())
-			f.send(flying(), time.Now())
+			synctest.Test(t, func(t *testing.T) {
+				f, _ := newFeed(out)
+				f.SetTargets(tc.targets)
+				f.SetLive(true)
+				f.Update(flying())
+				sendSettled(f, flying())
 
-			if st := f.Status(); st.Kind != tc.want || st.Err != tc.err {
-				t.Errorf("status %v %q, want %v %q", st.Kind, st.Err, tc.want, tc.err)
-			}
+				if st := f.Status(); st.Kind != tc.want || st.Err != tc.err {
+					t.Errorf("status %v %q, want %v %q", st.Kind, st.Err, tc.want, tc.err)
+				}
+			})
 		})
 	}
 }
@@ -220,6 +233,12 @@ func TestUDPFailures(t *testing.T) {
 // was replaced and came back.
 func TestUDPOutagesLoggedEachTime(t *testing.T) {
 	t.Parallel()
+
+	synctest.Test(t, func(t *testing.T) { testUDPOutagesLoggedEachTime(t) })
+}
+
+func testUDPOutagesLoggedEachTime(t *testing.T) {
+	t.Helper()
 
 	u := &fakeUDP{}
 	f, logs := newFeed(Outputs{UDP: u, Name: "T"})
@@ -242,7 +261,7 @@ func TestUDPOutagesLoggedEachTime(t *testing.T) {
 		}
 
 		f.SetTargets(step.targets)
-		f.send(flying(), time.Now())
+		sendSettled(f, flying())
 	}
 
 	out := logs.String()
@@ -258,29 +277,65 @@ func TestUDPOutagesLoggedEachTime(t *testing.T) {
 func TestUDPRecovers(t *testing.T) {
 	t.Parallel()
 
-	u := &fakeUDP{}
-	u.setFail(target(1))
+	synctest.Test(t, func(t *testing.T) {
+		u := &fakeUDP{}
+		u.setFail(target(1))
 
-	f, logs := newFeed(Outputs{UDP: u, Name: "T"})
-	f.SetTargets([]netip.AddrPort{target(1)})
-	f.SetLive(true)
-	f.Update(flying())
-	f.send(flying(), time.Now())
+		f, logs := newFeed(Outputs{UDP: u, Name: "T"})
+		f.SetTargets([]netip.AddrPort{target(1)})
+		f.SetLive(true)
+		f.Update(flying())
+		sendSettled(f, flying())
 
-	if f.Status().Kind != Failed {
-		t.Fatal("the only target fails: not Failed")
-	}
+		if f.Status().Kind != Failed {
+			t.Fatal("the only target fails: not Failed")
+		}
 
-	u.setFail()
-	f.send(flying(), time.Now())
+		u.setFail()
+		sendSettled(f, flying())
 
-	if st := f.Status(); st.Kind != Sending {
-		t.Errorf("after recovering: %+v", st)
-	}
+		if st := f.Status(); st.Kind != Sending {
+			t.Errorf("after recovering: %+v", st)
+		}
 
-	if !strings.Contains(logs.String(), "feed: udp 192.0.2.1:49002: working again") {
-		t.Errorf("log %q", logs)
-	}
+		if !strings.Contains(logs.String(), "feed: udp 192.0.2.1:49002: working again") {
+			t.Errorf("log %q", logs)
+		}
+	})
+}
+
+// A target that fails every other send, faster than outputSettle, neither
+// logs on every flip nor makes the feed Failed.
+func TestUDPFlappingSettles(t *testing.T) {
+	t.Parallel()
+
+	synctest.Test(t, func(t *testing.T) {
+		u := &fakeUDP{}
+		f, logs := newFeed(Outputs{UDP: u, Name: "T"})
+		f.SetTargets([]netip.AddrPort{target(1)})
+		f.SetLive(true)
+		f.Update(flying())
+
+		for i := range 3 * RateHz {
+			if i%2 == 0 {
+				u.setFail(target(1))
+			} else {
+				u.setFail()
+			}
+
+			f.send(flying(), time.Now())
+
+			if f.Status().Kind == Failed {
+				t.Fatal("a flapping target made the feed Failed")
+			}
+
+			time.Sleep(time.Second / RateHz)
+		}
+
+		if logs.String() != "" {
+			t.Errorf("log %q", logs)
+		}
+	})
 }
 
 func TestSerialFailure(t *testing.T) {
@@ -299,12 +354,18 @@ func TestSerialFailure(t *testing.T) {
 
 		f.send(flying(), time.Now())
 		synctest.Wait()
+		time.Sleep(outputSettle)
+		f.send(flying(), time.Now())
+		synctest.Wait()
 
 		if st := f.Status(); st.Kind != Failed || st.Err != serialFails("") {
 			t.Errorf("failing serial: %+v", st)
 		}
 
 		w.setErr(nil)
+		f.send(flying(), time.Now())
+		synctest.Wait()
+		time.Sleep(outputSettle)
 		f.send(flying(), time.Now())
 		synctest.Wait()
 
@@ -314,6 +375,38 @@ func TestSerialFailure(t *testing.T) {
 
 		if got, want := logs.String(), "feed: serial: boom\nfeed: serial: working again\n"; got != want {
 			t.Errorf("log %q, want %q", got, want)
+		}
+	})
+}
+
+// partialWriter writes half of each burst and times out, as a slow port or
+// one nobody reads does.
+type partialWriter struct{}
+
+func (partialWriter) Write(p []byte) (int, error) { return len(p) / 2, io.ErrShortWrite }
+
+// A partial write is a slow port, not a lost one: it doesn't fail.
+func TestSerialPartialWriteWorks(t *testing.T) {
+	t.Parallel()
+
+	synctest.Test(t, func(t *testing.T) {
+		f, logs := newFeed(Outputs{Serial: partialWriter{}})
+		f.SetLive(true)
+		f.Update(flying())
+
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+
+		go f.runSerial(ctx)
+
+		for range 3 {
+			f.send(flying(), time.Now())
+			synctest.Wait()
+			time.Sleep(outputSettle)
+		}
+
+		if st := f.Status(); st.Kind != Sending || logs.String() != "" {
+			t.Errorf("status %+v, log %q", st, logs)
 		}
 	})
 }

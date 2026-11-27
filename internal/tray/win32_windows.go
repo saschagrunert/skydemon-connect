@@ -17,6 +17,7 @@ var (
 	shell32  = syscall.NewLazyDLL("shell32.dll")
 	gdi32    = syscall.NewLazyDLL("gdi32.dll")
 	kernel32 = syscall.NewLazyDLL("kernel32.dll")
+	ole32    = syscall.NewLazyDLL("ole32.dll")
 
 	procRegisterClassExW       = user32.NewProc("RegisterClassExW")
 	procCreateWindowExW        = user32.NewProc("CreateWindowExW")
@@ -37,7 +38,9 @@ var (
 	procCreateIconIndirect     = user32.NewProc("CreateIconIndirect")
 	procGetSystemMetrics       = user32.NewProc("GetSystemMetrics")
 	procRegisterWindowMessageW = user32.NewProc("RegisterWindowMessageW")
-	procSetProcessDPIAware     = user32.NewProc("SetProcessDPIAware")
+	procGetDpiForWindow        = user32.NewProc("GetDpiForWindow")
+	procGetSystemMetricsForDpi = user32.NewProc("GetSystemMetricsForDpi")
+	procDestroyIcon            = user32.NewProc("DestroyIcon")
 	procShellNotifyIconW       = shell32.NewProc("Shell_NotifyIconW")
 	procShellExecuteW          = shell32.NewProc("ShellExecuteW")
 	procCreateDIBSection       = gdi32.NewProc("CreateDIBSection")
@@ -47,6 +50,7 @@ var (
 	procGetModuleHandleW       = kernel32.NewProc("GetModuleHandleW")
 	procCreateMutexW           = kernel32.NewProc("CreateMutexW")
 	procAllocConsole           = kernel32.NewProc("AllocConsole")
+	procCoInitializeEx         = ole32.NewProc("CoInitializeEx")
 )
 
 const (
@@ -82,8 +86,14 @@ const (
 	tpmNoNotify    = 0x0080
 	tpmReturnCmd   = 0x0100
 
-	mbIconError = 0x10
-	mbIconInfo  = 0x40
+	mbIconError     = 0x10
+	mbIconInfo      = 0x40
+	mbSetForeground = 0x10000
+	mbTopmost       = 0x40000
+
+	// COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE, as ShellExecute
+	// wants it.
+	coinitShell = 0x2 | 0x4
 
 	smCxSmIcon       = 49
 	swShowNormal     = 1

@@ -15,10 +15,6 @@ const (
 
 	fullCircle = 360.0
 
-	// Below this ground speed the velocity vector is mostly noise, so the
-	// heading stands in for the track.
-	minTrackSpeedKnots = 2.0
-
 	// Positions closer than this to 0°/0° are treated as "no position":
 	// SimConnect reports them while the sim loads or sits in its menu.
 	nullIslandDegrees = 1e-4
@@ -29,7 +25,7 @@ type Sample struct {
 	Lat         float64 // degrees, north positive
 	Lon         float64 // degrees, east positive
 	AltM        float64 // metres MSL
-	GSKnots     float64 // ground speed
+	GSKnots     float64 // ground speed, never negative
 	TrackTrue   float64 // ground track, degrees true, [0, 360)
 	HeadingTrue float64 // degrees true, [0, 360)
 	Pitch       float64 // degrees, nose up positive
@@ -90,15 +86,4 @@ func Round(v float64, decimals int) float64 {
 // "360.00".
 func RoundAngle(deg float64, decimals int) float64 {
 	return Norm360(Round(Norm360(deg), decimals))
-}
-
-// TrackFromVelocity returns the true ground track in degrees from the world
-// east and north velocity components. Below about 2 kt the track is noise,
-// so headingTrue is returned instead.
-func TrackFromVelocity(east, north, gsKnots, headingTrue float64) float64 {
-	if gsKnots < minTrackSpeedKnots {
-		return Norm360(headingTrue)
-	}
-
-	return Norm360(math.Atan2(east, north) * DegPerRad)
 }

@@ -29,6 +29,12 @@ const RateHz = 30
 // a frozen aircraft on at its last ground speed.
 const staleAfter = 2 * time.Second
 
+// outputSettle is how long an output must keep failing before it counts as
+// failing, logged and shown, and keep working before it counts as working
+// again: one that flaps, e.g. a send failing every other time, doesn't log
+// and pop a balloon on every flip.
+const outputSettle = 2 * time.Second
+
 // What the tray says about failing UDP output; the details go to the log.
 // Each fits the tray tooltip.
 const (
@@ -53,7 +59,7 @@ type Kind int
 
 const (
 	// Waiting means there is no position to send: the sim is not running,
-	// loading or in its menu.
+	// loading or in its menu. Status.Connected tells which.
 	Waiting Kind = iota
 	// Sending means positions are being sent.
 	Sending
@@ -67,23 +73,35 @@ type Status struct {
 	Sample position.Sample
 	Err    string
 	Kind   Kind
+	// Connected: a session with MSFS is up, in a flight or not.
+	Connected bool
 }
 
+// TooltipTitle is the tray tooltip's first line; Status.String follows.
+const TooltipTitle = "SkyDemonConnect\n"
+
 // MaxErrLen is the room for Status.Err in the tray's tooltip: 127
-// characters, of which the title line "SkyDemonConnect\n" and the "Error: "
-// that String puts first take 23. Texts meant for the user fit it.
-const MaxErrLen = 127 - len("SkyDemonConnect\n") - len("Error: ")
+// characters, of which TooltipTitle and the "Error: " that String puts
+// first take 23. Texts meant for the user fit it.
+const MaxErrLen = 127 - len(TooltipTitle) - len(errorPrefix)
+
+// errorPrefix starts the String of a Failed Status.
+const errorPrefix = "Error: "
 
 // String is a one-line description, used for the console and the tooltip.
 func (s Status) String() string {
 	switch s.Kind {
 	case Failed:
-		return "Error: " + s.Err
+		return errorPrefix + s.Err
 	case Sending:
 		return fmt.Sprintf("%d Hz · %.0f ft · %.0f kt · trk %03.0f",
 			RateHz, s.Sample.AltM/position.FeetToMeters, s.Sample.GSKnots,
 			position.RoundAngle(s.Sample.TrackTrue, 0))
 	case Waiting:
+	}
+
+	if s.Connected {
+		return "Connected to MSFS, waiting for a flight"
 	}
 
 	return "Waiting for MSFS…"
@@ -138,11 +156,13 @@ type Feed struct {
 	have bool
 	// live is true while the sim is connected and in a flight.
 	live bool
+	// connected is true while a session with the sim is up.
+	connected bool
 }
 
 // New returns a feed sending to out, logging output failures to l.
 func New(out Outputs, l *log.Logger) *Feed {
-	return &Feed{nmea: make(chan fix, 1), out: out, errs: report.New(l)}
+	return &Feed{nmea: make(chan fix, 1), out: out, errs: report.NewSettled(l, outputSettle)}
 }
 
 // Update stores the newest sample from the sim. A sample at 0°/0° means
@@ -180,7 +200,27 @@ func (f *Feed) SetLive(live bool) {
 
 	if live != f.live {
 		f.live, f.have = live, false
+
+		// Outputs are judged afresh: an error from before, e.g. of a COM
+		// port that came back meanwhile, would otherwise show as a new
+		// problem until the next writes settle.
+		f.udpErr, f.serialErr = "", ""
+		f.errs.Forget("feed: udp")
+		f.errs.Forget("feed: serial")
+
+		for _, t := range f.targets {
+			f.errs.Forget(udpKey(t))
+		}
 	}
+}
+
+// SetConnected records whether a session with the sim is up, in a flight
+// or not, for Status.
+func (f *Feed) SetConnected(connected bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.connected = connected
 }
 
 // SetError puts the feed into the Failed state until the next Update or
@@ -217,7 +257,7 @@ func (f *Feed) Status() Status {
 
 	st := f.stateLocked(time.Now())
 
-	return Status{Sample: st.sample, Err: st.why, Kind: st.kind}
+	return Status{Sample: st.sample, Err: st.why, Kind: st.kind, Connected: f.connected}
 }
 
 // Run sends until ctx is done, and returns once nothing writes to the
@@ -309,8 +349,6 @@ func (f *Feed) sendUDP(s position.Sample) {
 	dests := f.targets
 	f.mu.Unlock()
 
-	failed := 0
-
 	for _, t := range dests {
 		_, err := f.out.UDP.WriteToUDPAddrPort(gps, t)
 		if err == nil && att != nil {
@@ -318,29 +356,37 @@ func (f *Feed) sendUDP(s position.Sample) {
 		}
 
 		f.errs.Report(udpKey(t), err)
-
-		if err != nil {
-			failed++
-		}
 	}
 
-	f.udpDone(len(dests), failed)
+	f.udpDone(dests)
 }
 
-// udpDone records the outcome of sending to n targets, of which failed
-// failed. Each target's error is logged by sendUDP.
-func (f *Feed) udpDone(n, failed int) {
-	switch {
-	case n == 0 && f.out.Serial == nil:
+// udpDone sets what the UI says about UDP after a send to dests: it fails
+// while every target counts as failing, or while there is none and no
+// serial output either. Each target's errors are logged by sendUDP.
+func (f *Feed) udpDone(dests []netip.AddrPort) {
+	if len(dests) == 0 && f.out.Serial == nil {
 		f.errs.Report("feed: udp", errNoTargets)
-		f.setOutputErr(&f.udpErr, noTargetsText)
-	case n > 0 && failed == n:
-		f.errs.Report("feed: udp", nil)
-		f.setOutputErr(&f.udpErr, udpFailsText)
-	default:
-		f.errs.Report("feed: udp", nil)
-		f.setOutputErr(&f.udpErr, "")
+		f.setOutputErr(&f.udpErr, failingText(f.errs.Failing("feed: udp"), noTargetsText))
+
+		return
 	}
+
+	f.errs.Report("feed: udp", nil)
+
+	allFailing := len(dests) > 0 && !slices.ContainsFunc(dests, func(t netip.AddrPort) bool {
+		return !f.errs.Failing(udpKey(t))
+	})
+	f.setOutputErr(&f.udpErr, failingText(allFailing, udpFailsText))
+}
+
+// failingText is msg while failing, "" otherwise.
+func failingText(failing bool, msg string) string {
+	if failing {
+		return msg
+	}
+
+	return ""
 }
 
 // setOutputErr records what the UI says about a failing output, "" when it
@@ -370,15 +416,14 @@ func (f *Feed) runSerial(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case x := <-f.nmea:
-			_, err := io.WriteString(f.out.Serial, nmea.Sentences(x.sample, x.at))
-			f.errs.Report("feed: serial", err)
-
-			msg := ""
-			if err != nil {
-				msg = serialFails(f.out.SerialName)
+			n, err := io.WriteString(f.out.Serial, nmea.Sentences(x.sample, x.at))
+			if errors.Is(err, io.ErrShortWrite) && n > 0 {
+				err = nil // a slow port, or one nobody reads, still works
 			}
 
-			f.setOutputErr(&f.serialErr, msg)
+			f.errs.Report("feed: serial", err)
+			f.setOutputErr(&f.serialErr,
+				failingText(f.errs.Failing("feed: serial"), serialFails(f.out.SerialName)))
 		}
 	}
 }

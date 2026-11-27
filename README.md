@@ -15,8 +15,10 @@ single `.exe` in the system tray that can start and stop with MSFS.
 2. Download `SkyDemonConnect-<version>.zip` from the
    [releases](https://github.com/saschagrunert/skydemon-connect/releases) and
    extract it (right-click → Extract All) to a folder of its own, e.g.
-   `C:\Tools\SkyDemonConnect\`, not into Downloads. It contains
-   `SimConnect.dll` from the MSFS 2024 SDK; see [NOTICE.md](NOTICE.md).
+   `%LOCALAPPDATA%\Programs\SkyDemonConnect\`, not into Downloads. A folder
+   of your own profile is safer than one directly under `C:\`, where other
+   users of the PC can change files. The zip contains `SimConnect.dll` from
+   the MSFS 2024 SDK; see [NOTICE.md](NOTICE.md).
 3. Start `SkyDemonConnect.exe`. It is not signed, so SmartScreen asks first
    (More info → Run anyway; or right-click the zip → Properties → Unblock
    before extracting). Smart App Control on Windows 11 blocks unsigned apps;
@@ -32,10 +34,10 @@ To update, choose **Quit**, extract the new zip into the same folder and
 replace the files; if you extract it elsewhere, tick **Start with MSFS** again
 from the new copy.
 
-To uninstall, untick **Start with MSFS** (if it is unticked already, tick it
-first: unticking removes every SkyDemonConnect entry, also one from an older
-copy or with other options), choose **Quit** and delete the folder; the
-backup `exe.xml.bak-skydemonconnect` next to MSFS's `exe.xml` and
+To uninstall, untick **Start with MSFS** (if it reads "another or disabled
+entry", click it twice: the first click puts this copy's entry in its
+place), choose **Quit** and delete the folder; the backup
+`exe.xml.bak-skydemonconnect` next to MSFS's `exe.xml` and
 `%LOCALAPPDATA%\SkyDemonConnect` (if it exists) can go too.
 
 ## Tray icon
@@ -46,20 +48,31 @@ backup `exe.xml.bak-skydemonconnect` next to MSFS's `exe.xml` and
 | ⚪   | waiting for MSFS: not running, loading or in its menu       |
 | 🔴   | a problem, e.g. `SimConnect.dll` missing; hover for details |
 
-The menu has **Start with MSFS**, **Open log** and **Quit**. Only one copy
+The menu shows the status and where positions go (UDP addresses, the COM
+port), then **Start with MSFS**, **Open log** and **Quit**. Only one copy
 runs at a time. Each start writes a fresh `SkyDemonConnect.log` next to the
 exe (or in `%LOCALAPPDATA%\SkyDemonConnect` if that folder is read-only) and
 keeps the previous one as `SkyDemonConnect.previous.log`; `-console` writes
-none. While MSFS is paused, the last position keeps being sent, standing
-still after two seconds. In MSFS's menus no position is sent and SkyDemon
-shows the GPS as lost.
+none. A copy run from the same folder in another Windows session logs to
+`SkyDemonConnect.<number>.log` instead, which is deleted after a week.
+
+In MSFS's menus no position is sent and SkyDemon shows the GPS as lost.
+During an active pause (the Pause key) the last position keeps being sent,
+standing still after two seconds. Whether MSFS 2024 counts its Esc menu as a
+menu or as a pause is not verified yet; the log says which (`simconnect: no
+flight running` or nothing).
 
 **Start with MSFS** adds the exe to MSFS's `exe.xml` (Microsoft Store and
 Steam), so that MSFS starts it and it quits with MSFS. It passes on the
-options this copy was started with, e.g. `-udp`. The original file is backed
-up once to `exe.xml.bak-skydemonconnect`. After moving the exe or to change
-the options, start it the new way: the menu item is unticked until you tick
-it again. To add it by hand, put this inside `<SimBase.Document>` of
+options this copy was started with that differ from the defaults, e.g.
+`-udp`. The original file is backed up once to
+`exe.xml.bak-skydemonconnect`. After moving the exe or to change the options,
+start it the new way: the menu item then reads "Start with MSFS (another or
+disabled entry)", and a click replaces the entry with this copy's. With
+`-auto`, MSFS started it and it exits when MSFS exits; if MSFS isn't its
+parent process, it exits when MSFS's SimConnect session ends, and keeps
+running if MSFS closes before one ever started. To add it by hand, put this
+inside `<SimBase.Document>` of
 `%LOCALAPPDATA%\Packages\Microsoft.Limitless_8wekyb3d8bbwe\LocalCache\exe.xml`
 (Store) or `%APPDATA%\Microsoft Flight Simulator 2024\exe.xml` (Steam):
 
@@ -67,7 +80,7 @@ it again. To add it by hand, put this inside `<SimBase.Document>` of
 <Launch.Addon>
   <Name>SkyDemonConnect</Name>
   <Disabled>False</Disabled>
-  <Path>C:\Tools\SkyDemonConnect\SkyDemonConnect.exe</Path>
+  <Path>C:\Users\you\AppData\Local\Programs\SkyDemonConnect\SkyDemonConnect.exe</Path>
   <CommandLine>-auto</CommandLine>
 </Launch.Addon>
 ```
@@ -111,10 +124,12 @@ again every 10 seconds.
 
 - **`SimConnect.dll` not found:** keep it next to the exe, as in the zip, and
   don't run the exe from inside the zip. It is also found in the SDK folder
-  named by `MSFS2024_SDK` or `MSFS_SDK`, and in `C:\MSFS 2024 SDK` or
-  `C:\MSFS SDK`. If the log says it can't be loaded, install the Microsoft
-  Visual C++ runtime (`vc_redist.x64.exe`), or replace a 32-bit copy from FSX
-  with the MSFS 2024 one.
+  named by the `MSFS2024_SDK` or `MSFS_SDK` environment variable, which the
+  SDK installer sets. That folder defaults to `C:\MSFS 2024 SDK`, where other
+  users of the PC can change files; on a shared PC, keep the DLL next to the
+  exe, which is looked at first. If the log says it can't be loaded, install
+  the Microsoft Visual C++ runtime (`vc_redist.x64.exe`), or replace a 32-bit
+  copy from FSX with the MSFS 2024 one.
 - **The tablet gets nothing:** it must be on the same network as the PC, not
   a guest Wi-Fi, and without a VPN in the way. Some routers don't pass
   broadcasts to Wi-Fi: send to the tablet directly, e.g.
@@ -139,8 +154,8 @@ The exe is cross-compiled with Go from any OS. `make help` lists the targets,
 e.g. `make build`, `make test`, `make lint` and `make demo`. `make test` uses
 the race detector, which needs a C compiler (`make test RACE=` without);
 `make lint` needs curl and tar; `make bundle` builds the release zip,
-downloading the 650 MB MSFS SDK installer, and needs curl, unzip, python3
-and `msiextract` from msitools.
+downloading the 650 MB MSFS SDK installer, and needs curl, unzip and
+`msiextract` from msitools.
 
 Pushing a `v*` tag on `main` runs CI and publishes a release with
 `SHA256SUMS` and build provenance, which
@@ -148,7 +163,9 @@ Pushing a `v*` tag on `main` runs CI and publishes a release with
 checks. A tag like `v1.2.0-rc.1` makes a pre-release, to try the release
 first. To bump the MSFS SDK, golangci-lint or Go, see the comments at the top
 of the Makefile and in `.github/workflows/ci.yml`; Dependabot covers the
-actions, go-winres and govulncheck.
+actions, go-winres and govulncheck. GitHub turns off scheduled workflows
+after 60 days without activity in the repository; re-enable the weekly
+`ci` run in the Actions tab if it was.
 
 ## License
 

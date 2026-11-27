@@ -64,31 +64,6 @@ func TestRoundAngle(t *testing.T) {
 	}
 }
 
-func TestTrackFromVelocity(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name                       string
-		east, north, gs, hdg, want float64
-	}{
-		{name: "north", east: 0, north: 100, gs: 60, hdg: 5, want: 0},
-		{name: "east", east: 100, north: 0, gs: 60, hdg: 5, want: 90},
-		{name: "south", east: 0, north: -100, gs: 60, hdg: 5, want: 180},
-		{name: "west", east: -100, north: 0, gs: 60, hdg: 5, want: 270},
-		{name: "slow uses heading", east: -100, north: 0, gs: 1, hdg: 123, want: 123},
-		{name: "slow heading normalised", east: 0, north: 0, gs: 0, hdg: -10, want: 350},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-
-			if got := position.TrackFromVelocity(tc.east, tc.north, tc.gs, tc.hdg); got != tc.want {
-				t.Errorf("got %v, want %v", got, tc.want)
-			}
-		})
-	}
-}
-
 func TestIsNullIsland(t *testing.T) {
 	t.Parallel()
 

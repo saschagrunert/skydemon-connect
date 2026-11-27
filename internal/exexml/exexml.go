@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 	"unicode/utf8"
 )
 
@@ -34,8 +35,14 @@ const (
 	backupExt    = ".bak-skydemonconnect"
 	fileMode     = 0o644
 	maxLatin1    = 0xFF
+	// project is where the README shows the entry to add by hand.
+	project = "github.com/saschagrunert/skydemon-connect"
 	// byHand is what to do about a file this package won't change.
-	byHand = "; add the entry by hand, see github.com/saschagrunert/skydemon-connect"
+	byHand = "; add the entry by hand, see " + project
+	// replaceTries and replaceWait bound the retries of replacing a file
+	// that another program, e.g. a virus scanner or MSFS, has open.
+	replaceTries = 10
+	replaceWait  = 100 * time.Millisecond
 )
 
 // skeleton is what a new exe.xml starts as.
@@ -61,7 +68,8 @@ var (
 	declRE = regexp.MustCompile(`\A\s*<\?xml\b[^>]*?\bencoding\s*=\s*["']([^"']*)["']`)
 
 	errNoInstall = errors.New("MSFS 2024 not found (Microsoft Store or Steam). " +
-		"Start MSFS once, or add the entry by hand, see github.com/saschagrunert/skydemon-connect")
+		"Start MSFS once, or add the entry by hand, see " + project)
+	errChanged    = errors.New("changed while it was being edited, try again")
 	errNoDocClose = errors.New("exe.xml has no " + docClose + ", not touching it" + byHand)
 	errUTF16      = errors.New("exe.xml is UTF-16 or binary, not touching it" + byHand)
 	errNotLatin1  = errors.New("character can't be written to a Windows-1252 exe.xml")
@@ -93,29 +101,53 @@ func find(localAppData, appData string) Installs {
 	return out
 }
 
-// Enabled reports whether any of the files launches the SkyDemonConnect at
-// exePath with args, as Set writes them. An entry marked
-// <Disabled>True</Disabled> does not count, nor one for another path, e.g.
-// from before the exe was moved, or with other options: Set(true) then
-// replaces it.
-func (in Installs) Enabled(exePath string, args []string) bool {
+// State is what the exe.xml files say about SkyDemonConnect.
+type State int
+
+const (
+	// Absent means no file has an entry for SkyDemonConnect.
+	Absent State = iota
+	// Other means an entry exists, but not for this exe and these options,
+	// e.g. from before the exe was moved, from another copy, or disabled.
+	// Set(true) replaces it, Set(false) removes it.
+	Other
+	// Ours means an entry launches SkyDemonConnect from this exe with
+	// these options.
+	Ours
+)
+
+// State reports whether any of the files launches SkyDemonConnect from
+// exePath with args, as Set writes them (Ours), has an entry for it that
+// differs (Other), or none (Absent). An entry marked
+// <Disabled>True</Disabled> counts as Other.
+func (in Installs) State(exePath string, args []string) State {
+	state := Absent
+
 	for _, p := range in {
 		doc, _, err := read(p)
-		if err == nil && has(doc, exePath, commandLine(args)) {
-			return true
+		if err != nil {
+			continue
+		}
+
+		switch entryState(doc, exePath, commandLine(args)) {
+		case Ours:
+			return Ours
+		case Other:
+			state = Other
+		case Absent:
 		}
 	}
 
-	return false
+	return state
 }
 
 // Set adds (enable) or removes our entry in every file. The entry's
-// command line is -auto followed by args, which must already be quoted for
-// the Windows command line. Enabling replaces an existing entry, also one
-// that was disabled by hand or has other args. Before the first change of
-// an existing file, it is copied to exe.xml.bak-skydemonconnect; if that
-// fails, the file is left alone. A file that can't be changed doesn't stop
-// the others.
+// command line is -auto followed by args, each quoted for the Windows
+// command line as needed, e.g. "-name=My Sim". Enabling replaces an
+// existing entry, also one that was disabled by hand or has other args.
+// Before the first change of an existing file, it is copied to
+// exe.xml.bak-skydemonconnect; if that fails, the file is left alone. A
+// file that can't be changed doesn't stop the others.
 func (in Installs) Set(enable bool, exePath string, args []string) error {
 	if len(in) == 0 {
 		return errNoInstall
@@ -151,7 +183,16 @@ func inFile(path string, err error) error {
 }
 
 func update(path string, enable bool, exePath, commandLine string) error {
-	doc, enc, err := read(path)
+	// A symlinked exe.xml stays a symlink: the file it points to is
+	// edited.
+	path = resolve(path)
+
+	orig, err := readRaw(path)
+	if err != nil {
+		return err
+	}
+
+	doc, enc, err := decodeFile(orig)
 	if err != nil {
 		return err
 	}
@@ -182,7 +223,33 @@ func update(path string, enable bool, exePath, commandLine string) error {
 		}
 	}
 
+	return writeIfUnchanged(path, orig, b)
+}
+
+// writeIfUnchanged replaces path with b, unless it no longer holds orig:
+// another installer changed it meanwhile, whose change mustn't be undone.
+func writeIfUnchanged(path string, orig, b []byte) error {
+	now, err := readRaw(path)
+	if err != nil {
+		return err
+	}
+
+	if !bytes.Equal(now, orig) {
+		return errChanged
+	}
+
 	return writeFile(path, b)
+}
+
+// resolve follows symlinks to the file path names; a path that doesn't
+// resolve, e.g. a missing file, stays as it is.
+func resolve(path string) string {
+	target, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return path
+	}
+
+	return target
 }
 
 // edited returns doc with our entry added or removed; an empty doc starts
@@ -245,7 +312,7 @@ func writeFile(path string, b []byte) error {
 	}
 
 	if err == nil {
-		err = os.Rename(tmp, path) // replaces path, also on Windows
+		err = replace(tmp, path, os.Rename, busy, time.Sleep)
 	}
 
 	if err != nil {
@@ -257,27 +324,99 @@ func writeFile(path string, b []byte) error {
 	return nil
 }
 
-// commandLine is the entry's command line for args.
-func commandLine(args []string) string {
-	return strings.Join(append([]string{autoArg}, args...), " ")
+// replace renames tmp to path, which replaces path, also on Windows. A
+// file another program has open, e.g. a virus scanner just checking the
+// new one, can't be replaced for a moment: busy errors are retried for
+// about a second.
+func replace(
+	tmp, path string,
+	rename func(string, string) error,
+	busy func(error) bool,
+	sleep func(time.Duration),
+) error {
+	var err error
+
+	for try := range replaceTries {
+		if try > 0 {
+			sleep(replaceWait)
+		}
+
+		err = rename(tmp, path)
+		if err == nil || !busy(err) {
+			return err
+		}
+	}
+
+	return err
 }
 
-// has reports whether doc contains our entry for exePath and commandLine,
-// not disabled. Comments inside the entry are ignored.
-func has(doc, exePath, commandLine string) bool {
+// commandLine is the entry's command line for args, each quoted as
+// needed.
+func commandLine(args []string) string {
+	words := make([]string, 0, 1+len(args))
+	words = append(words, autoArg)
+
+	for _, a := range args {
+		words = append(words, quoteArg(a))
+	}
+
+	return strings.Join(words, " ")
+}
+
+// quoteArg quotes s for a Windows command line, as CommandLineToArgvW and
+// Go's flag parsing read it back.
+func quoteArg(s string) string {
+	if s != "" && !strings.ContainsAny(s, " \t\"") {
+		return s
+	}
+
+	var b strings.Builder
+
+	b.WriteByte('"')
+
+	slashes := 0
+
+	for _, r := range s {
+		switch r {
+		case '\\':
+			slashes++
+		case '"':
+			b.WriteString(strings.Repeat(`\`, slashes+1))
+			slashes = 0
+		default:
+			slashes = 0
+		}
+
+		b.WriteRune(r)
+	}
+
+	b.WriteString(strings.Repeat(`\`, slashes)) // before the closing quote
+	b.WriteByte('"')
+
+	return b.String()
+}
+
+// entryState reports what doc says about our entry: none, one for exePath
+// and commandLine and not disabled, or another. Comments inside the entry
+// are ignored.
+func entryState(doc, exePath, commandLine string) State {
 	plain := withoutComments(doc)
 
 	s, e := findEntry(doc, plain)
 	if s < 0 {
-		return false
+		return Absent
 	}
 
 	entry := plain[s:e]
 	path, cmd := pathRE.FindStringSubmatch(entry), cmdRE.FindStringSubmatch(entry)
 
-	return !disabledRE.MatchString(entry) && path != nil && samePath(unescape(path[1]), exePath) &&
-		cmd != nil &&
-		strings.TrimSpace(unescape(cmd[1])) == strings.Map(xmlRune, commandLine)
+	if !disabledRE.MatchString(entry) && path != nil &&
+		samePath(unescape(path[1]), exePath) && cmd != nil &&
+		strings.TrimSpace(unescape(cmd[1])) == strings.Map(xmlRune, commandLine) {
+		return Ours
+	}
+
+	return Other
 }
 
 // samePath compares Windows paths, which are case-insensitive.
@@ -570,15 +709,26 @@ func (e encoding) encode(doc string) ([]byte, error) {
 // read returns the file's text and encoding. A missing or blank file reads
 // as empty, in the skeleton's encoding.
 func read(path string) (string, encoding, error) {
-	b, err := os.ReadFile(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return "", latin1, nil
-	}
-
+	b, err := readRaw(path)
 	if err != nil {
 		return "", latin1, err
 	}
 
+	return decodeFile(b)
+}
+
+// readRaw returns the file's bytes; a missing file has none.
+func readRaw(path string) ([]byte, error) {
+	b, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+
+	return b, err
+}
+
+// decodeFile decodes a file's bytes, as read describes.
+func decodeFile(b []byte) (string, encoding, error) {
 	doc, enc, err := decode(b)
 	if err != nil {
 		return "", latin1, err

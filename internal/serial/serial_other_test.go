@@ -3,7 +3,6 @@
 package serial_test
 
 import (
-	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -17,12 +16,9 @@ func TestOpenFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "nmea.txt")
 
 	for _, line := range []string{"$A\r\n", "$B\r\n"} {
-		port, err := serial.Open(path, 115200)
-		if err != nil {
-			t.Fatal(err)
-		}
+		port := serial.Open(path, 115200)
 
-		_, err = port.Write([]byte(line))
+		_, err := port.Write([]byte(line))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -39,10 +35,7 @@ func TestOpenFile(t *testing.T) {
 	}
 
 	// A port that isn't there opens fine; writes fail until it is.
-	missing, err := serial.Open(filepath.Join(t.TempDir(), "missing", "x"), 115200)
-	if err != nil {
-		t.Fatal(err)
-	}
+	missing := serial.Open(filepath.Join(t.TempDir(), "missing", "x"), 115200)
 
 	_, err = missing.Write([]byte("$A\r\n"))
 	if err == nil {
@@ -50,9 +43,4 @@ func TestOpenFile(t *testing.T) {
 	}
 
 	_ = missing.Close()
-
-	_, err = serial.Open(path, 1)
-	if !errors.Is(err, serial.ErrBaud) {
-		t.Errorf("baud 1: %v", err)
-	}
 }

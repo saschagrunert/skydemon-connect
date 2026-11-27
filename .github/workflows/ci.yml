@@ -29,12 +29,13 @@ defaults:
   run:
     shell: bash
 
-# go.mod's toolchain line is the Go every job uses, locally too: a current
-# stable release, so that the binary does not ship a standard library with
-# known vulnerabilities. Dependabot doesn't bump it; a failing weekly
-# govulncheck is the signal to bump it and release. Caching is off: the
-# suite takes seconds, the main module has no dependencies, and the tools
-# module is small.
+# The toolchain line of go.mod, which tools/go.mod repeats (make
+# verify-tidy checks that they agree), is the Go every job uses, locally
+# too: a current stable release, so that the binary does not ship a
+# standard library with known vulnerabilities. Dependabot doesn't bump it;
+# a failing weekly govulncheck is the signal to bump it and release.
+# Caching is off: the suite takes seconds, the main module has no
+# dependencies, and the tools module is small.
 
 jobs:
   lint:
@@ -124,23 +125,80 @@ jobs:
       - run: make govulncheck
 
   # The release zip, with SimConnect.dll from the pinned MSFS SDK installer
-  # (650 MB): built weekly and on demand, so that a broken bundle shows
-  # before a tag is pushed, not after.
+  # (650 MB): built weekly, on demand and on a push to main that changes
+  # what goes into it or the SimConnect binding, so that a broken bundle,
+  # or a binding the real DLL rejects, shows before a tag is pushed.
   bundle:
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    if: >-
+      github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'push' && github.ref == 'refs/heads/main')
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    outputs:
+      built: ${{ steps.changed.outputs.build }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           fetch-depth: 0 # git describe for the version
+      # Without a diff, e.g. on a first or a forced push, it is built.
+      - id: changed
+        env:
+          BEFORE: ${{ github.event.before }}
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" != push ]] ||
+            ! files=$(git diff --name-only "$BEFORE" HEAD 2>/dev/null) ||
+            grep -qE '^(Makefile|go\.mod|LICENSE|NOTICE\.md|internal/(zipfiles|simconnect)/|tools/|\.github/workflows/ci\.yml)' <<<"$files"; then
+            echo build=true >> "$GITHUB_OUTPUT"
+          fi
+      - if: steps.changed.outputs.build == 'true'
+        uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version-file: go.mod
+          cache: false
+      - if: steps.changed.outputs.build == 'true'
+        run: sudo apt-get update -q && sudo apt-get install -y --no-install-recommends msitools
+      - if: steps.changed.outputs.build == 'true'
+        run: make bundle
+      - if: steps.changed.outputs.build == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: simconnect-dll
+          path: build/sdk-*/SimConnect.dll
+          if-no-files-found: error
+          retention-days: 7
+
+  # The real SimConnect.dll on Windows: every function the app uses is
+  # bound, and without MSFS an open fails as the app expects.
+  simconnect-dll:
+    needs: bundle
+    if: needs.bundle.outputs.built == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
           go-version-file: go.mod
           cache: false
-      - run: sudo apt-get update -q && sudo apt-get install -y --no-install-recommends msitools
-      - run: make bundle
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: simconnect-dll
+          path: dll
+      # The artifact keeps the path below the upload's wildcard, e.g.
+      # sdk-1.8.2/SimConnect.dll.
+      - run: |
+          shopt -s nullglob
+          dlls=(dll/*/SimConnect.dll dll/SimConnect.dl[l]) # patterns, so that nullglob drops missing ones
+          if (( ${#dlls[@]} != 1 )); then
+            echo "::error::want one SimConnect.dll in the artifact, got: ${dlls[*]}"
+            exit 1
+          fi
+          SKYDEMONCONNECT_SIMCONNECT_DLL="$(cygpath -w "$PWD/${dlls[0]}")"
+          export SKYDEMONCONNECT_SIMCONNECT_DLL
+          go test -count=1 -run TestRealDLL -v ./internal/simconnect
 
   tidy:
     if: github.event_name != 'schedule'

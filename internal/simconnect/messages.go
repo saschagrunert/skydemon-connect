@@ -3,6 +3,7 @@ package simconnect
 import (
 	"encoding/binary"
 	"log"
+	"strconv"
 )
 
 // Message layout from SimConnect.h. The structures are packed.
@@ -13,16 +14,21 @@ const (
 	recvEvent         = 4
 	recvSimobjectData = 8
 
-	recvHeaderSize   = 12 // SIMCONNECT_RECV: dwSize, dwVersion, dwID
-	recvIDOffset     = 8
-	exceptionMinSize = 16
+	recvHeaderSize = 12 // SIMCONNECT_RECV: dwSize, dwVersion, dwID
+	recvIDOffset   = 8
+	// SIMCONNECT_RECV_EXCEPTION: the header, dwException, dwSendID, dwIndex.
+	exceptionMinSize  = 16
+	sendIDOffset      = 16
+	indexOffset       = 20
+	exceptionFullSize = 24
 	// SIMCONNECT_RECV_EVENT: the header, uGroupID, uEventID, dwData.
 	eventIDOffset   = 16
 	eventDataOffset = 20
 	eventMinSize    = 24
 	// In SIMCONNECT_RECV_SIMOBJECT_DATA the header and 7 DWORDs precede
-	// the data block.
-	dataOffset = 40
+	// the data block; the last of them is dwDefineCount.
+	defineCountOffset = 36
+	dataOffset        = 40
 )
 
 // eventSim is the client event ID of the "Sim" system event: whether a
@@ -44,6 +50,9 @@ type dispatcher struct {
 	// main menu, loading or the Esc menu. The first Sim event can come
 	// before OPEN.
 	stopped bool
+	// badData is set once a data block that doesn't match the definition
+	// was logged: it repeats every frame.
+	badData bool
 }
 
 // handle processes one message and reports whether the sim quit.
@@ -57,6 +66,7 @@ func (d *dispatcher) handle(buf []byte) bool {
 		d.connected = true
 
 		d.log.Printf("simconnect: connected")
+		d.h.Connected(true)
 
 		if !d.stopped {
 			d.h.Live(true)
@@ -68,17 +78,43 @@ func (d *dispatcher) handle(buf []byte) bool {
 	case recvException:
 		d.exception(buf)
 	case recvSimobjectData:
-		var v [numVars]float64
-
-		_, err := binary.Decode(buf[min(len(buf), dataOffset):], binary.LittleEndian, &v)
-		if err != nil {
-			return false
-		}
-
-		d.h.Update(toSample(&v))
+		d.data(buf)
 	}
 
 	return false
+}
+
+// data handles a SIMCONNECT_RECV_SIMOBJECT_DATA. A block too short for
+// every variable, e.g. because SimConnect rejected one renamed in an SDK
+// update, would otherwise be dropped silently every frame, leaving the icon
+// grey: it is logged, once per session, with the variable count SimConnect
+// reports. That count is only logged, not checked: how MSFS 2024 fills it
+// is not verified.
+func (d *dispatcher) data(buf []byte) {
+	var v [numVars]float64
+
+	const want = dataOffset + numVars*8
+
+	if len(buf) >= want {
+		_, err := binary.Decode(buf[dataOffset:], binary.LittleEndian, &v)
+		if err == nil {
+			d.h.Update(toSample(&v))
+
+			return
+		}
+	}
+
+	if !d.badData {
+		d.badData = true
+
+		count := "no"
+		if len(buf) >= dataOffset {
+			count = strconv.Itoa(int(binary.LittleEndian.Uint32(buf[defineCountOffset:])))
+		}
+
+		d.log.Printf("simconnect: data block of %d bytes (%s variables), want %d bytes "+
+			"(%d variables), not used", len(buf), count, want, numVars)
+	}
 }
 
 // event handles a SIMCONNECT_RECV_EVENT.
@@ -122,5 +158,16 @@ func (d *dispatcher) exception(buf []byte) {
 	}
 
 	d.exceptions[code] = true
+
+	// dwSendID and dwIndex tell which call, and which of its arguments,
+	// the sim rejected.
+	if len(buf) >= exceptionFullSize {
+		d.log.Printf("simconnect: exception %d for send %d, argument %d (repeats are not logged)",
+			code, binary.LittleEndian.Uint32(buf[sendIDOffset:]),
+			binary.LittleEndian.Uint32(buf[indexOffset:]))
+
+		return
+	}
+
 	d.log.Printf("simconnect: exception %d (repeats are not logged)", code)
 }

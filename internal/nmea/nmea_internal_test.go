@@ -98,3 +98,15 @@ func TestSentencesUseUTC(t *testing.T) {
 		t.Errorf("time not converted to UTC: %q", out)
 	}
 }
+
+// RMC speed over ground is unsigned, and nothing prints as "-0.0".
+func TestSentencesNoNegatives(t *testing.T) {
+	t.Parallel()
+
+	ts := time.Date(2026, 11, 27, 9, 0, 0, 0, time.UTC)
+	out := Sentences(position.Sample{Lat: 51, Lon: 12, AltM: -0.01, GSKnots: -0.04}, ts)
+
+	if strings.Contains(out, "-") {
+		t.Errorf("a minus sign in %q", out)
+	}
+}

@@ -19,8 +19,10 @@ const (
 	retryInterval = 3 * time.Second
 	// probeInterval: while no messages arrive (a paused sim, or a crashed
 	// one, which sends no QUIT), the data request is re-issued this
-	// often. It fails once the pipe is gone.
-	probeInterval = 5 * time.Second
+	// often. It fails once the pipe is gone, so a crash is noticed within
+	// about this time, during which the last position is still sent. A
+	// sim that hangs with its pipe open looks paused until it closes.
+	probeInterval = 2 * time.Second
 	// openTimeout bounds the wait for the sim's answer to a connection.
 	openTimeout = 30 * time.Second
 	// maxWait is the longest wait for a message, which bounds how quickly
@@ -62,8 +64,9 @@ type looper struct {
 	rep  *report.Reporter
 	// setup is the setup problem last passed to Failed, "" for none.
 	setup string
-	// live is the state last passed to Live.
-	live bool
+	// live and connected are the states last passed to Live and
+	// Connected.
+	live, connected bool
 }
 
 // loop connects to the sim and reconnects until ctx is done. Errors are
@@ -76,6 +79,7 @@ func loop(ctx context.Context, l *log.Logger, open opener, h Handlers) {
 		connected, err := session(ctx, l, state.openConn, state.handlers())
 
 		state.setLive(false)
+		state.setConnected(false)
 
 		if ctx.Err() != nil {
 			return
@@ -90,10 +94,11 @@ func loop(ctx context.Context, l *log.Logger, open opener, h Handlers) {
 	}
 }
 
-// handlers are the user's, with Live passed on only when it changes.
+// handlers are the user's, with Live and Connected passed on only when
+// they change.
 func (lp *looper) handlers() Handlers {
 	h := lp.h
-	h.Live = lp.setLive
+	h.Live, h.Connected = lp.setLive, lp.setConnected
 
 	return h
 }
@@ -123,8 +128,9 @@ func (lp *looper) ended(connected bool, err error) {
 		lp.h.Ended()
 
 		// A fresh start: the next problem is logged, even if it is the
-		// one from before this session.
-		lp.rep.Forget("simconnect")
+		// one from before this session. A new Reporter, not Forget, which
+		// would log the "waiting for MSFS" before the session as reset.
+		lp.rep = report.New(lp.log)
 	} else {
 		lp.rep.Report("simconnect", failure(err))
 	}
@@ -134,6 +140,13 @@ func (lp *looper) setLive(live bool) {
 	if live != lp.live {
 		lp.live = live
 		lp.h.Live(live)
+	}
+}
+
+func (lp *looper) setConnected(connected bool) {
+	if connected != lp.connected {
+		lp.connected = connected
+		lp.h.Connected(connected)
 	}
 }
 

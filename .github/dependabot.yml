@@ -1,19 +1,27 @@
 version: 2
 updates:
-  # One pull request per ecosystem and week, not one per dependency.
+  # One pull request per ecosystem and week, not one per dependency, and
+  # only for releases a few days old.
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 3
     groups:
       actions:
         patterns: ["*"]
   # The main module has no dependencies; the tools module pins govulncheck
-  # and go-winres.
+  # and go-winres. Its requirements are all indirect, as tool directives
+  # record them, so all dependency types are allowed.
   - package-ecosystem: gomod
     directory: /tools
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 3
+    allow:
+      - dependency-type: all
     groups:
       tools:
         patterns: ["*"]

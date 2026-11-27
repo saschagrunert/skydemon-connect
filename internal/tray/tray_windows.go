@@ -3,8 +3,10 @@
 package tray
 
 import (
+	"errors"
 	"fmt"
 	"log"
+	"path/filepath"
 	"runtime"
 	"syscall"
 	"unsafe"
@@ -20,7 +22,11 @@ const (
 	iconID  = 1
 	// shellExecuteOK: ShellExecuteW returns a value above 32 on success.
 	shellExecuteOK = 32
+	// smallIconSize is the tray icon size at 100 % scaling.
+	smallIconSize = 16
 )
+
+var errIconNotShown = errors.New("Shell_NotifyIcon failed")
 
 // Options configure the tray.
 type Options struct {
@@ -37,9 +43,13 @@ type Options struct {
 	// MSFS are the exe.xml files "Start with MSFS" edits; nil finds
 	// them each time, so that an MSFS installed meanwhile is seen.
 	MSFS exexml.Installs
-	// AutoArgs are the options "Start with MSFS" writes after -auto,
-	// quoted for the Windows command line.
+	// AutoArgs are the options "Start with MSFS" writes after -auto, as
+	// given, e.g. "-name=My Sim"; they are quoted as needed.
 	AutoArgs []string
+	// Destinations, if set, returns where positions go, one menu line
+	// each, e.g. "UDP: 127.0.0.1, 192.168.1.255" (the default port left
+	// out) or "NMEA: COM11 at 115200 baud".
+	Destinations func() []string
 	// SessionEnd, if set, is called when Windows ends the session (logoff,
 	// shutdown): the process may be ended as soon as the tray handled
 	// that, so stop the work there; Run returns too, if there is time.
@@ -62,10 +72,13 @@ type tray struct {
 	taskbarCreated uintptr
 	nid            notifyIconData
 	status         tracker
+	// added: the icon is believed to be in the notification area. A
+	// failed call, e.g. at logon while Explorer is busy, may or may not
+	// have changed that, so showIcon tries both ways.
+	added bool
+	// iconFailed: that failure was logged; logged again once it worked.
+	iconFailed bool
 }
-
-// tooltipTitle is the tooltip's first line; the feed status follows.
-const tooltipTitle = "SkyDemonConnect\n"
 
 // installs returns the exe.xml files to edit.
 func (t *tray) installs() exexml.Installs {
@@ -84,7 +97,9 @@ func Run(opts *Options) error {
 
 	defer runtime.UnlockOSThread()
 
-	_, _, _ = procSetProcessDPIAware.Call() // crisp icons on scaled displays
+	// ShellExecute, for Open log, may use shell extensions that need COM
+	// on this thread. The exe's manifest makes it DPI aware.
+	_, _, _ = procCoInitializeEx.Call(0, coinitShell)
 
 	t := &tray{opts: *opts, icons: map[feed.Kind]uintptr{}, showError: ShowError}
 
@@ -93,31 +108,58 @@ func Run(opts *Options) error {
 		return err
 	}
 
+	// Whichever way the loop ends, no icon is left behind.
+	defer t.removeIcon()
+
 	// No greeting when MSFS started the app, nor before a problem balloon.
 	if !opts.Auto && t.status.last != feed.Failed {
 		t.balloon(welcomeTitle, welcomeText, niifInfo)
 	}
 
-	t.loop()
-
-	return nil
+	return t.loop()
 }
 
-func (t *tray) create() error {
-	size, _, _ := procGetSystemMetrics.Call(smCxSmIcon)
-	if size == 0 {
-		size = 16
+// iconSize is the small icon size for the window's monitor scaling.
+func (t *tray) iconSize() int {
+	if procGetDpiForWindow.Find() == nil && procGetSystemMetricsForDpi.Find() == nil {
+		dpi, _, _ := procGetDpiForWindow.Call(t.hwnd)
+		if dpi != 0 {
+			size, _, _ := procGetSystemMetricsForDpi.Call(smCxSmIcon, dpi)
+			if size != 0 {
+				return int(size)
+			}
+		}
 	}
 
+	size, _, _ := procGetSystemMetrics.Call(smCxSmIcon)
+	if size == 0 {
+		return smallIconSize
+	}
+
+	return int(size)
+}
+
+// makeIcons draws the icons for the current scaling, replacing old ones.
+func (t *tray) makeIcons() error {
+	size := t.iconSize()
+
 	for _, kind := range kinds() {
-		h, err := makeIcon(icon.Render(int(size), colour(kind)))
+		h, err := makeIcon(icon.Render(size, colour(kind)))
 		if err != nil {
 			return err
+		}
+
+		if old := t.icons[kind]; old != 0 {
+			_, _, _ = procDestroyIcon.Call(old)
 		}
 
 		t.icons[kind] = h
 	}
 
+	return nil
+}
+
+func (t *tray) create() error {
 	inst, _, _ := procGetModuleHandleW.Call(0)
 	cls, title := utf16Ptr(className), utf16Ptr("SkyDemonConnect")
 
@@ -149,15 +191,21 @@ func (t *tray) create() error {
 	t.hwnd = hwnd
 	t.allowShellMessages()
 
+	err = t.makeIcons()
+	if err != nil {
+		return err
+	}
+
+	// The timer first: without it, an icon added now would stay forever.
+	if r, _, err := procSetTimer.Call(hwnd, timerID, tickMS, 0); r == 0 {
+		return fmt.Errorf("SetTimer: %w", err)
+	}
+
 	t.nid.Size = uint32(unsafe.Sizeof(t.nid))
 	t.nid.Wnd = hwnd
 	t.nid.ID = iconID
 	t.nid.CallbackMessage = wmTray
-	t.refresh(nimAdd, nifMessage|nifIcon|nifTip)
-
-	if r, _, err := procSetTimer.Call(hwnd, timerID, tickMS, 0); r == 0 {
-		return fmt.Errorf("SetTimer: %w", err)
-	}
+	t.refresh()
 
 	return nil
 }
@@ -176,17 +224,53 @@ func (t *tray) allowShellMessages() {
 	}
 }
 
-func (t *tray) shell(op uintptr, flags uint32) {
+// shell calls Shell_NotifyIcon and reports whether it worked.
+func (t *tray) shell(op uintptr, flags uint32) bool {
 	t.nid.Flags = flags
-	_, _, _ = procShellNotifyIconW.Call(op, uintptr(unsafe.Pointer(&t.nid)))
+	r, _, _ := procShellNotifyIconW.Call(op, uintptr(unsafe.Pointer(&t.nid)))
+
+	return r != 0
+}
+
+// showIcon updates the icon, or adds it when it isn't there. Whether it is
+// isn't always known: a call that timed out, e.g. with Explorer busy at
+// logon, may have worked. So the other operation is tried too, an add
+// when an update fails and the other way round, and either working means
+// the icon is there. A failure of both is logged once, and the next
+// refresh tries again: without the icon, the app couldn't be quit.
+func (t *tray) showIcon() {
+	const flags = nifMessage | nifIcon | nifTip
+
+	ops := []uintptr{nimModify, nimAdd}
+	if !t.added {
+		ops = []uintptr{nimAdd, nimModify}
+	}
+
+	t.added = t.shell(ops[0], flags) || t.shell(ops[1], flags)
+
+	switch {
+	case !t.added && !t.iconFailed:
+		t.iconFailed = true
+		t.opts.Log.Printf("tray: %v, trying again", errIconNotShown)
+	case t.added && t.iconFailed:
+		t.iconFailed = false
+		t.opts.Log.Printf("tray: icon shown")
+	}
+}
+
+// removeIcon takes the icon out of the notification area, also when an
+// earlier failure left it unclear whether it is there.
+func (t *tray) removeIcon() {
+	t.shell(nimDelete, 0)
+	t.added = false
 }
 
 // refresh updates icon and tooltip from the feed status.
-func (t *tray) refresh(op uintptr, flags uint32) {
+func (t *tray) refresh() {
 	st := t.opts.Feed.Status()
 	t.nid.Icon = t.icons[st.Kind]
-	copyUTF16(t.nid.Tip[:], tooltipTitle+st.String())
-	t.shell(op, flags)
+	copyUTF16(t.nid.Tip[:], feed.TooltipTitle+st.String())
+	t.showIcon()
 
 	if !t.status.update(st.Kind, st.Err) {
 		return
@@ -209,7 +293,7 @@ func (t *tray) balloon(title, text string, flags uint32) {
 
 // session handles Windows ending the session (logoff, shutdown): the
 // session may end, and when it does, the app stops.
-func (t *tray) session(message, ending uintptr) uintptr {
+func (t *tray) session(message uint32, ending uintptr) uintptr {
 	if message == wmQueryEndSession {
 		return 1 // it may end
 	}
@@ -225,7 +309,7 @@ func (t *tray) session(message, ending uintptr) uintptr {
 // process once the window procedure returns.
 func (t *tray) endSession() {
 	t.opts.Log.Printf("tray: Windows is ending the session")
-	t.shell(nimDelete, 0)
+	t.removeIcon()
 
 	if t.opts.SessionEnd != nil {
 		t.opts.SessionEnd()
@@ -235,18 +319,23 @@ func (t *tray) endSession() {
 }
 
 func (t *tray) quit() {
-	t.shell(nimDelete, 0)
+	t.removeIcon()
 
 	_, _, _ = procPostQuitMessage.Call(0)
 }
 
-func (t *tray) loop() {
+// loop runs the message loop until WM_QUIT, or GetMessage fails.
+func (t *tray) loop() error {
 	var message msg
 
 	for {
-		r, _, _ := procGetMessageW.Call(uintptr(unsafe.Pointer(&message)), 0, 0, 0)
-		if int32(r) <= 0 { //nolint:gosec // BOOL, -1 on error
-			return
+		r, _, err := procGetMessageW.Call(uintptr(unsafe.Pointer(&message)), 0, 0, 0)
+
+		switch int32(r) { //nolint:gosec // BOOL, -1 on error
+		case 0:
+			return nil
+		case -1:
+			return fmt.Errorf("GetMessage: %w", err)
 		}
 
 		_, _, _ = procTranslateMessage.Call(uintptr(unsafe.Pointer(&message)))
@@ -278,12 +367,21 @@ func (t *tray) showMenu() {
 	handle, _, _ := procCreatePopupMenu.Call()
 	defer func() { _, _, _ = procDestroyMenu.Call(handle) }()
 
-	items := menu(
-		t.opts.Version,
-		t.opts.Feed.Status().String(),
-		t.installs().Enabled(t.opts.ExePath, t.opts.AutoArgs),
-	)
-	for _, item := range items {
+	state := &menuState{
+		version:  t.opts.Version,
+		status:   t.opts.Feed.Status().String(),
+		canStart: filepath.IsAbs(t.opts.ExePath),
+	}
+
+	if t.opts.Destinations != nil {
+		state.destinations = t.opts.Destinations()
+	}
+
+	if state.canStart {
+		state.msfs = t.installs().State(t.opts.ExePath, t.opts.AutoArgs)
+	}
+
+	for _, item := range menu(state) {
 		appendMenu(handle, item)
 	}
 
@@ -339,10 +437,11 @@ func (t *tray) openLog() {
 }
 
 func (t *tray) toggleMSFS() {
-	// Unticked also when the entry is for a moved exe or other options:
-	// enabling fixes it.
+	// A click removes this copy's own entry, and replaces any other, e.g.
+	// for a moved exe, other options or one disabled by hand, with this
+	// copy's.
 	installs := t.installs()
-	enable := !installs.Enabled(t.opts.ExePath, t.opts.AutoArgs)
+	enable := installs.State(t.opts.ExePath, t.opts.AutoArgs) != exexml.Ours
 
 	err := installs.Set(enable, t.opts.ExePath, t.opts.AutoArgs)
 	if err != nil {
@@ -355,16 +454,31 @@ func (t *tray) toggleMSFS() {
 	t.opts.Log.Printf("tray: start with MSFS: %v (%s %v)", enable, t.opts.ExePath, t.opts.AutoArgs)
 
 	if enable {
-		t.balloon(addedTitle, addedText, niifInfo)
+		t.balloon(addedTitle, addedMessage(t.opts.AutoArgs), niifInfo)
 	} else {
 		t.balloon(removedTitle, removedText, niifInfo)
 	}
 }
 
+// explorerRestarted adds the icon again, drawn anew: Explorer restarted,
+// maybe after a scaling change.
+func (t *tray) explorerRestarted() {
+	err := t.makeIcons()
+	if err != nil {
+		t.opts.Log.Printf("tray: icons: %v", err)
+	}
+
+	t.added = false
+	t.refresh()
+}
+
 // wndProc is the window procedure. Run creates the window once per
 // process, so the callback, of which Windows allows a limited number, is
 // made once too.
-func (t *tray) wndProc(hwnd, message, wparam, lparam uintptr) uintptr {
+//
+// message is a UINT: as a uint32, the undefined upper half of its 64-bit
+// register is ignored.
+func (t *tray) wndProc(hwnd uintptr, message uint32, wparam, lparam uintptr) uintptr {
 	switch {
 	case message == wmTray:
 		switch lparam & loWordMask {
@@ -378,7 +492,7 @@ func (t *tray) wndProc(hwnd, message, wparam, lparam uintptr) uintptr {
 		case <-t.opts.Quit:
 			t.quit()
 		default:
-			t.refresh(nimModify, nifIcon|nifTip)
+			t.refresh()
 		}
 
 		return 0
@@ -388,13 +502,13 @@ func (t *tray) wndProc(hwnd, message, wparam, lparam uintptr) uintptr {
 		return 0
 	case message == wmQueryEndSession, message == wmEndSession:
 		return t.session(message, wparam)
-	case t.taskbarCreated != 0 && message == t.taskbarCreated:
-		t.refresh(nimAdd, nifMessage|nifIcon|nifTip) // Explorer restarted
+	case t.taskbarCreated != 0 && uintptr(message) == t.taskbarCreated:
+		t.explorerRestarted()
 
 		return 0
 	}
 
-	r, _, _ := procDefWindowProcW.Call(hwnd, message, wparam, lparam)
+	r, _, _ := procDefWindowProcW.Call(hwnd, uintptr(message), wparam, lparam)
 
 	return r
 }

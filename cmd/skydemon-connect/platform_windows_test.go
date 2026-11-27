@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -24,12 +25,12 @@ func TestWatchProcess(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	isPing := func(path string) bool {
+	isPing := func(_ syscall.Handle, path string) bool {
 		return strings.EqualFold(filepath.Base(path), "PING.EXE")
 	}
 
 	_, err = watchProcess(t.Context(), cmd.Process.Pid,
-		func(string) bool { return false }, testutil.Log(t))
+		func(syscall.Handle, string) bool { return false }, testutil.Log(t))
 	if !errors.Is(err, errNotWatched) {
 		t.Errorf("a process not accepted: %v", err)
 	}
@@ -38,6 +39,20 @@ func TestWatchProcess(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
+	// The child started after us, so it isn't taken for our parent.
+	const queryLimitedInformation = 0x1000 // PROCESS_QUERY_LIMITED_INFORMATION
+
+	h, err := syscall.OpenProcess(queryLimitedInformation, false, uint32(cmd.Process.Pid))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if startedBeforeUs(h) {
+		t.Error("a child counts as started before us")
+	}
+
+	_ = syscall.CloseHandle(h)
 
 	select {
 	case <-ctx.Done():

@@ -13,10 +13,13 @@ import (
 // Port is the UDP port EFB apps listen on for simulator data.
 const Port = 49002
 
-// Decimals the angles are rounded and printed to. Rounding first wraps
-// 359.996° to 0 rather than printing 360.00.
+// Decimals the values are rounded and printed to. Rounding first wraps
+// 359.996° to 0 rather than printing 360.00, and avoids "-0.0".
 const (
+	coordDecimals    = 6
+	altDecimals      = 1
 	trackDecimals    = 2
+	speedDecimals    = 2
 	attitudeDecimals = 1
 )
 
@@ -26,10 +29,20 @@ const (
 // The specification suggests 2-3 decimals for 1 Hz updates; at 30 Hz the
 // aircraft moves only a few metres between messages, so more are sent.
 func XGPS(name string, s position.Sample) string {
-	return fmt.Sprintf("XGPS%s,%.6f,%.6f,%.1f,%.*f,%.2f",
-		name, s.Lon, s.Lat, s.AltM,
-		trackDecimals, position.RoundAngle(s.TrackTrue, trackDecimals),
-		s.GSKnots*position.KnotsToMetersPerSecond)
+	return fmt.Sprintf(
+		"XGPS%s,%.*f,%.*f,%.*f,%.*f,%.*f",
+		name,
+		coordDecimals,
+		position.Round(s.Lon, coordDecimals),
+		coordDecimals,
+		position.Round(s.Lat, coordDecimals),
+		altDecimals,
+		position.Round(s.AltM, altDecimals),
+		trackDecimals,
+		position.RoundAngle(s.TrackTrue, trackDecimals),
+		speedDecimals,
+		position.Round(s.GSKnots*position.KnotsToMetersPerSecond, speedDecimals),
+	)
 }
 
 // XATT returns an attitude message: XATT<name>,heading_true,pitch,roll with

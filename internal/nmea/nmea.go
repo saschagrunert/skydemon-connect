@@ -20,6 +20,8 @@ const (
 	latitudeDegreeWidth  = 2
 	longitudeDegreeWidth = 3
 	trackDecimals        = 1
+	speedDecimals        = 1
+	altDecimals          = 1
 )
 
 // Sentences returns RMC, GGA and GSA sentences for one fix at time t, each
@@ -38,10 +40,11 @@ func Sentences(s position.Sample, t time.Time) string {
 
 	var b strings.Builder
 
-	b.WriteString(sentence(fmt.Sprintf("GPRMC,%s,A,%s,%.1f,%.1f,%s,,,A",
-		stamp, pos, s.GSKnots, position.RoundAngle(s.TrackTrue, trackDecimals), date)))
-	b.WriteString(sentence(fmt.Sprintf("GPGGA,%s,%s,1,10,0.8,%.1f,M,0.0,M,,",
-		stamp, pos, s.AltM)))
+	b.WriteString(sentence(fmt.Sprintf("GPRMC,%s,A,%s,%.*f,%.1f,%s,,,A",
+		stamp, pos, speedDecimals, position.Round(s.GSKnots, speedDecimals),
+		position.RoundAngle(s.TrackTrue, trackDecimals), date)))
+	b.WriteString(sentence(fmt.Sprintf("GPGGA,%s,%s,1,10,0.8,%.*f,M,0.0,M,,",
+		stamp, pos, altDecimals, position.Round(s.AltM, altDecimals))))
 	b.WriteString(sentence("GPGSA,A,3,01,02,03,04,05,06,07,08,09,10,,,1.2,0.8,0.9"))
 
 	return b.String()

@@ -215,7 +215,7 @@ linters:
       # each is looked up once.
       - linters:
           - gochecknoglobals
-        text: ^(proc\w+|kernel32|user32|shell32|gdi32) is a global variable
+        text: ^(proc\w+|kernel32|user32|shell32|gdi32|ole32) is a global variable
         path: _windows.*\.go
       # Passing pointers to Win32 is what unsafe is for in these files.
       - linters:

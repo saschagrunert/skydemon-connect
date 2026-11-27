@@ -26,6 +26,16 @@ func TestStatus(t *testing.T) {
 		t.Errorf("new feed: %+v %q", st, st.String())
 	}
 
+	// Connected, but in a menu: still Waiting, with the reason.
+	f.SetConnected(true)
+
+	if st := f.Status(); st.Kind != feed.Waiting || !st.Connected ||
+		st.String() != "Connected to MSFS, waiting for a flight" {
+		t.Errorf("connected in a menu: %+v %q", st, st.String())
+	}
+
+	f.SetConnected(false)
+
 	f.SetLive(true)
 	f.Update(position.Sample{}) // 0°/0°: no position
 
