@@ -41,11 +41,13 @@ BUNDLE := $(BUILD_DIR)/SkyDemonConnect-$(VERSION).zip
 # take the "SDK Installer (Core)" of the newest entry in
 # https://sdk.flightsimulator.com/msfs2024/files/sdk.json. On a mismatch,
 # make bundle prints the actual SHA-256: check that the zip came from
-# sdk.flightsimulator.com, pin it, and do the same for SimConnect.dll.
+# sdk.flightsimulator.com, pin it, and do the same for SimConnect.dll and
+# the EULA. ci caches both files under make sdk-cache-key.
 SDK_VERSION = 1.8.2
 SDK_URL = https://sdk.flightsimulator.com/msfs2024/files/installers/$(SDK_VERSION)/MSFS2024_SDK_Core_Installer_$(SDK_VERSION).zip
 SDK_SHA256 = 1dd575e47a9c4de3efff39bd0f9ab180602059f4a1c16913f659d018a91b5a0a
 SIMCONNECT_SHA256 = 8f386401a990eb5dce561cd9ecebf4c3e7565f4501ed48e1785edf2467feee41
+EULA_SHA256 = 8856e6201705a2e7b0097e9ab891f1e36c7944d52af1f5bcd4ceee6a3e69386c
 SDK_DIR := $(BUILD_DIR)/sdk-$(SDK_VERSION)
 
 LDFLAGS := -s -w -H windowsgui -X main.version=$(VERSION)
@@ -152,7 +154,12 @@ bundle: $(BUNDLE) ## Zip the exe with SimConnect.dll from the MSFS SDK (needs ms
 # The entries get SOURCE_DATE_EPOCH, or else the commit's time, so the same
 # commit gives the same zip.
 # docs/reference.md keeps its folder, so that the README's link to it works.
+# The SDK files are checked again, as they may come from an earlier build or
+# a cache; on a mismatch they are removed, to be extracted anew.
 $(BUNDLE): $(BINARY) $(SDK_DIR)/SimConnect.dll README.md docs/reference.md LICENSE NOTICE.md
+	@( $(call check_sha256,$(SDK_DIR)/SimConnect.dll,$(SIMCONNECT_SHA256),keep) ) && \
+		( $(call check_sha256,$(SDK_DIR)/MSFS SDK EULA.pdf,$(EULA_SHA256),keep) ) || \
+		{ rm -f $(SDK_DIR)/SimConnect.dll "$(SDK_DIR)/MSFS SDK EULA.pdf"; exit 1; }
 	$(HOST_GO) run ./internal/zipfiles $@ "$${SOURCE_DATE_EPOCH:-$$(git log -1 --format=%ct)}" \
 		$(BINARY) $(SDK_DIR)/SimConnect.dll "$(SDK_DIR)/MSFS SDK EULA.pdf" README.md \
 		docs/reference.md=docs/reference.md LICENSE NOTICE.md
@@ -172,9 +179,15 @@ $(SDK_DIR)/SimConnect.dll:
 	unzip -q -j $(SDK_DIR)/sdk.zip -d $(SDK_DIR)/msi
 	cd $(SDK_DIR)/msi && msiextract -C ../files *.msi >/dev/null
 	cp "$(SDK_DIR)/files/MSFS 2024 SDK/Licenses/MSFS SDK EULA.pdf" $(SDK_DIR)/
+	@$(call check_sha256,$(SDK_DIR)/MSFS SDK EULA.pdf,$(EULA_SHA256))
 	cp "$(SDK_DIR)/files/MSFS 2024 SDK/SimConnect SDK/lib/SimConnect.dll" $(SDK_DIR)/
 	@$(call check_sha256,$(SDK_DIR)/SimConnect.dll,$(SIMCONNECT_SHA256))
 	rm -rf $(SDK_DIR)/msi $(SDK_DIR)/files $(SDK_DIR)/sdk.zip
+
+# The key ci caches $(SDK_DIR) under: a new pin makes a new entry.
+.PHONY: sdk-cache-key
+sdk-cache-key:
+	@echo msfs-sdk-$(SDK_VERSION)-$(SDK_SHA256)-$(SIMCONNECT_SHA256)-$(EULA_SHA256)
 
 .PHONY: verify-version
 # A host build with the same -X: go version -m can't check the exe itself,

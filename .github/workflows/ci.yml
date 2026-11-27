@@ -168,7 +168,21 @@ jobs:
         with:
           go-version-file: go.mod
           cache: false
+      # The two files make bundle keeps from the installer, which it checks
+      # again; a hit saves about 35 seconds, when the entry is younger than
+      # GitHub's 7 days. The weekly run downloads the installer, to see that
+      # it's there. release doesn't use the cache: restoring unpacks a tar
+      # that any job with the runtime token could have saved, anywhere.
       - if: steps.changed.outputs.build == 'true'
+        id: sdk
+        run: echo "key=$(make -s sdk-cache-key)" >> "$GITHUB_OUTPUT"
+      - if: steps.changed.outputs.build == 'true' && github.event_name != 'schedule'
+        id: sdk-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: build/sdk-*
+          key: ${{ steps.sdk.outputs.key }}
+      - if: steps.changed.outputs.build == 'true' && steps.sdk-cache.outputs.cache-hit != 'true'
         run: sudo apt-get update -q && sudo apt-get install -y --no-install-recommends msitools
       - if: steps.changed.outputs.build == 'true'
         run: make bundle
