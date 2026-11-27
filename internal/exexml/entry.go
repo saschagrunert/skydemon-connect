@@ -56,16 +56,21 @@ func quoteArg(s string) string {
 
 // entryState reports what doc says about our entry: none, one for exePath
 // and commandLine and not disabled, or another. Comments inside the entry
-// are ignored.
+// are ignored. Two entries of ours, e.g. one left from an older version,
+// are another: Set then replaces both with one.
 func entryState(doc, exePath, commandLine string) State {
 	plain := withoutComments(doc)
 
-	s, e := findEntry(doc, plain)
-	if s < 0 {
+	start, end := findEntry(doc, plain)
+	if start < 0 {
 		return Absent
 	}
 
-	entry := plain[s:e]
+	if next, _ := findEntry(doc[end:], plain[end:]); next >= 0 {
+		return Other
+	}
+
+	entry := plain[start:end]
 	path, cmd := pathRE.FindStringSubmatch(entry), cmdRE.FindStringSubmatch(entry)
 
 	if !disabledRE.MatchString(entry) && path != nil &&
@@ -217,8 +222,8 @@ func add(doc, exePath, commandLine string, enc encoding) (string, error) {
 		"\t" + addonOpen,
 		"\t\t<Name>" + entryName + "</Name>",
 		"\t\t<Disabled>False</Disabled>",
-		"\t\t<Path>" + escape(exePath, enc.maxRune()) + "</Path>",
-		"\t\t<CommandLine>" + escape(commandLine, enc.maxRune()) + "</CommandLine>",
+		"\t\t<Path>" + escape(exePath, enc.holds) + "</Path>",
+		"\t\t<CommandLine>" + escape(commandLine, enc.holds) + "</CommandLine>",
 		"\t" + addonClose,
 	}, newline) + newline
 
@@ -246,11 +251,11 @@ func remove(doc string) string {
 
 // escape escapes s for XML text: only &, < and >, which text can't hold
 // as they are, so that quotes in options and apostrophes in paths stay
-// literal. Runes above maxRune, which the file's encoding can't hold, are
+// literal. Runes holds rejects, which the file's encoding can't hold, are
 // written as numeric character references; whether MSFS's parser resolves
 // them (needed for e.g. Polish or Cyrillic user names) is not verified on
 // a real install.
-func escape(s string, maxRune rune) string {
+func escape(s string, holds func(rune) bool) string {
 	var out strings.Builder
 
 	for _, r := range s {
@@ -263,7 +268,7 @@ func escape(s string, maxRune rune) string {
 			out.WriteString("&lt;")
 		case r == '>':
 			out.WriteString("&gt;")
-		case r > maxRune:
+		case !holds(r):
 			_, _ = fmt.Fprintf(&out, "&#x%X;", r)
 		default:
 			out.WriteRune(r)

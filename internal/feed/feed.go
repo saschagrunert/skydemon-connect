@@ -36,6 +36,14 @@ const (
 	staleAfter  = 2 * time.Second
 )
 
+// maxAhead caps how far a position is moved on to the time it is sent: a
+// fix is sent at RateHz, whatever the sim's frame rate, so it is moved on
+// along its track by the time since its frame came, or since it last moved. Without that, at 45
+// fps the step between packets alternates between one and two frames, at
+// 25 fps every sixth packet repeats one. Past maxAhead the sim is late,
+// e.g. stuttering, and guessing further would only overshoot.
+const maxAhead = 100 * time.Millisecond
+
 // outputSettle is how long an output must keep failing before it counts as
 // failing, logged and shown, and keep working before it counts as working
 // again: one that flaps, e.g. a send failing every other time, doesn't log
@@ -49,10 +57,10 @@ const (
 )
 
 // What the tray says about failing UDP output; the details go to the log.
-// Each fits the tray tooltip.
+// Each fits MaxErrLen.
 const (
-	udpFailsText  = "UDP: sending to every -udp target fails, see the log"
-	noTargetsText = "UDP: no -udp host name resolves, see the log"
+	udpFailsText  = "UDP: sending to every target fails, see the log"
+	noTargetsText = "UDP: no target host name resolves, see the log"
 )
 
 // errNoTargets is logged while no UDP target resolves.
@@ -96,6 +104,11 @@ type Status struct {
 
 // ErrorPrefix starts the String of a Failed Status.
 const ErrorPrefix = "Error: "
+
+// MaxErrLen is the room for Status.Err in the tray's tooltip: its 127
+// characters, less the title line "SkyDemonConnect\n" and ErrorPrefix.
+// The failures the feed reports fit it.
+const MaxErrLen = 127 - len("SkyDemonConnect\n") - len(ErrorPrefix)
 
 // String is a one-line description, used for the console and the tooltip.
 func (s Status) String() string {
@@ -141,6 +154,7 @@ type Outputs struct {
 	SerialName string
 }
 
+// fix is a position to write as NMEA, and when it was taken.
 type fix struct {
 	at     time.Time
 	sample position.Sample
@@ -157,18 +171,18 @@ type Feed struct {
 	nmea chan fix
 	errs *report.Reporter
 	out  Outputs
-	// moved is when sample last moved: a new frame at the same position
-	// doesn't make it fresh. same counts the frames since that did not
-	// move.
+	// moved is when sample came, or last moved: a new frame at the same
+	// position doesn't make it fresh. same counts the frames since that
+	// did not move.
 	moved   time.Time
 	same    int
 	frames  frameRate
 	targets []netip.AddrPort
-	// err is the input's error, from SetError. udpErr and serialErr are
-	// set while every UDP send, or the serial output, fails.
-	err, udpErr, serialErr string
-	sample                 position.Sample
-	mu                     sync.Mutex
+	// err is the input's error, from SetError. Whether an output fails
+	// is errs's to say.
+	err    string
+	sample position.Sample
+	mu     sync.Mutex
 	// have is true while sample is a position from the current session.
 	have bool
 	// live is true while the sim is connected and in a flight.
@@ -259,7 +273,6 @@ func (f *Feed) SetLive(live bool) {
 		// Outputs are judged afresh: an error from before, e.g. of a COM
 		// port that came back meanwhile, would otherwise show as a new
 		// problem until the next writes settle.
-		f.udpErr, f.serialErr = "", ""
 		f.errs.Forget(keyUDP)
 		f.errs.Forget(keySerial)
 
@@ -351,11 +364,11 @@ func (f *Feed) Run(ctx context.Context) {
 			return
 		case now := <-tick.C:
 			f.mu.Lock()
-			st := f.stateLocked(now)
+			s, send := f.toSendLocked(now)
 			f.mu.Unlock()
 
-			if st.send {
-				f.send(st.sample, now)
+			if send {
+				f.send(s, now)
 			}
 		}
 	}
@@ -370,8 +383,8 @@ type state struct {
 }
 
 // stateLocked is the one place that decides what the feed does: the sample
-// to send at now, whether to send it and the Kind the UI shows. Positions
-// are also sent while an output fails, so that it is retried.
+// at now, whether to send it and the Kind the UI shows. Positions are also
+// sent while an output fails, so that it is retried.
 func (f *Feed) stateLocked(now time.Time) state {
 	st := state{sample: f.sample, kind: Sending, send: f.err == "" && f.have && f.live}
 	if f.same >= staleFrames || now.Sub(f.moved) > staleAfter {
@@ -383,13 +396,53 @@ func (f *Feed) stateLocked(now time.Time) state {
 		st.kind, st.why = Failed, f.err
 	case !st.send:
 		st.kind = Waiting
-	case f.udpErr != "":
-		st.kind, st.why = Failed, f.udpErr
-	case f.serialErr != "":
-		st.kind, st.why = Failed, f.serialErr
+	default:
+		st.why = f.outputFailureLocked()
+		if st.why != "" {
+			st.kind = Failed
+		}
 	}
 
 	return st
+}
+
+// toSendLocked returns the position to send at now, moved on by up to
+// maxAhead (see there) from when it last moved, and whether to send one.
+// Once it counts as standing still it is sent with ground speed 0, but
+// still moved on with its own: it stays where the last packets put it
+// instead of stepping back.
+func (f *Feed) toSendLocked(now time.Time) (position.Sample, bool) {
+	st := f.stateLocked(now)
+
+	s := f.sample.Ahead(min(now.Sub(f.moved), maxAhead))
+	s.GSKnots = st.sample.GSKnots
+
+	return s, st.send
+}
+
+// outputFailureLocked is what the UI says about a failing output, "" while
+// they work: UDP fails while every target counts as failing, or while
+// there is none and no serial output either.
+func (f *Feed) outputFailureLocked() string {
+	if f.out.UDP != nil {
+		switch {
+		case len(f.targets) == 0:
+			// keyUDP fails only without serial output, see sendUDP.
+			if f.errs.Failing(keyUDP) {
+				return noTargetsText
+			}
+		case !slices.ContainsFunc(f.targets, func(t netip.AddrPort) bool {
+			return !f.errs.Failing(udpKey(t))
+		}):
+			return udpFailsText
+		}
+	}
+
+	if f.out.Serial != nil && f.errs.Failing(keySerial) {
+		return serialFails(f.out.SerialName)
+	}
+
+	return ""
 }
 
 // send sends s to every output. NMEA goes out at the full rate too, not
@@ -431,43 +484,13 @@ func (f *Feed) sendUDP(s position.Sample) {
 		f.errs.Report(udpKey(t), err)
 	}
 
-	f.udpDone(dests)
-}
-
-// udpDone sets what the UI says about UDP after a send to dests: it fails
-// while every target counts as failing, or while there is none and no
-// serial output either. Each target's errors are logged by sendUDP.
-func (f *Feed) udpDone(dests []netip.AddrPort) {
+	// Having no target is a failure only without serial output.
+	var none error
 	if len(dests) == 0 && f.out.Serial == nil {
-		f.errs.Report(keyUDP, errNoTargets)
-		f.setOutputErr(&f.udpErr, failingText(f.errs.Failing(keyUDP), noTargetsText))
-
-		return
+		none = errNoTargets
 	}
 
-	f.errs.Report(keyUDP, nil)
-
-	allFailing := len(dests) > 0 && !slices.ContainsFunc(dests, func(t netip.AddrPort) bool {
-		return !f.errs.Failing(udpKey(t))
-	})
-	f.setOutputErr(&f.udpErr, failingText(allFailing, udpFailsText))
-}
-
-// failingText is msg while failing, "" otherwise.
-func failingText(failing bool, msg string) string {
-	if failing {
-		return msg
-	}
-
-	return ""
-}
-
-// setOutputErr records what the UI says about a failing output, "" when it
-// works.
-func (f *Feed) setOutputErr(field *string, msg string) {
-	f.mu.Lock()
-	*field = msg
-	f.mu.Unlock()
+	f.errs.Report(keyUDP, none)
 }
 
 // queueNMEA hands x to the serial writer. While the writer is still busy,
@@ -495,8 +518,6 @@ func (f *Feed) runSerial(ctx context.Context) {
 			}
 
 			f.errs.Report(keySerial, err)
-			f.setOutputErr(&f.serialErr,
-				failingText(f.errs.Failing(keySerial), serialFails(f.out.SerialName)))
 		}
 	}
 }

@@ -31,10 +31,23 @@ func TestProcsExist(t *testing.T) {
 	for _, p := range []*syscall.LazyProc{
 		procMessageBoxW, procCreateMutexW, procAllocConsole,
 		procSetDefaultDllDirectories, procQueryFullProcessImageNameW,
+		procGetModuleHandleW, procRegisterClassExW, procCreateWindowExW,
+		procDefWindowProcW, procGetMessageW, procDispatchMessageW,
 	} {
 		err := p.Find()
 		if err != nil {
 			t.Error(err)
 		}
+	}
+}
+
+// The session window can be created; the session end itself can't be
+// tested.
+func TestOnSessionEnd(t *testing.T) {
+	t.Parallel()
+
+	err := OnSessionEnd(func() { t.Error("called without a session end") })
+	if err != nil {
+		t.Fatal(err)
 	}
 }

@@ -69,8 +69,9 @@ func TestParseErrors(t *testing.T) {
 		target string
 		want   error
 	}{
-		{"not an address", errSyntax},
-		{"127.0.0.1", errSyntax}, // no port
+		{"not an address", errBadHost},
+		{"1.2.3.4:5:6", errSyntax},
+		{"[1.2.3.4:5", errSyntax},
 		{"127.0.0.1:0", errNoPort},
 		{"127.0.0.1:65536", errNoPort},
 		{"[::1]:49002", errNotIPv4},
@@ -129,7 +130,16 @@ func TestHostNameFollowed(t *testing.T) {
 			3,
 		},
 		{[]netip.Addr{netip.MustParseAddr("192.168.1.9")}, "192.0.2.1:6000, 192.168.1.9:5000", 3},
+		// Failed lookups keep the last address keepFailed times, then
+		// drop it.
+		{nil, "192.0.2.1:6000, 192.168.1.9:5000", 4},
+		{nil, "192.0.2.1:6000, 192.168.1.9:5000", 4},
+		{nil, "192.0.2.1:6000, 192.168.1.9:5000", 4},
 		{nil, "192.0.2.1:6000", 4},
+		{nil, "192.0.2.1:6000", 4},
+		// A success starts the count over.
+		{[]netip.Addr{netip.MustParseAddr("192.168.1.10")}, "192.0.2.1:6000, 192.168.1.10:5000", 5},
+		{nil, "192.0.2.1:6000, 192.168.1.10:5000", 6},
 	} {
 		answer = step.answer
 
@@ -267,4 +277,51 @@ func TestResolveNoIPv4(t *testing.T) {
 	if !errors.Is(err, errNoIPv4) {
 		t.Errorf("resolve: %v", err)
 	}
+}
+
+// Refresh sets the targets at once, for the host names Known leaves out,
+// and then each time they change, checking every interval.
+func TestRefresh(t *testing.T) {
+	t.Parallel()
+
+	synctest.Test(t, func(t *testing.T) {
+		spec, err := Parse("127.0.0.1:1,tablet.local:2", 49002)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		calls := 0
+		r := spec.Resolver(testutil.Log(t))
+		r.lookup = func(context.Context, string) ([]netip.Addr, error) {
+			calls++
+			if calls < 3 {
+				return nil, errNoSuchHost
+			}
+
+			return []netip.Addr{netip.MustParseAddr("127.0.0.2")}, nil
+		}
+
+		var sets []string
+
+		ctx, cancel := context.WithCancel(t.Context())
+		done := make(chan struct{})
+
+		go func() {
+			defer close(done)
+
+			r.Refresh(ctx, time.Second, r.Known(), func(l []netip.AddrPort) {
+				sets = append(sets, List(l).String())
+			})
+		}()
+
+		time.Sleep(5*time.Second + time.Second/2)
+		synctest.Wait()
+		cancel()
+		<-done
+
+		// Once at the start, then every interval; one change.
+		if calls != 6 || !slices.Equal(sets, []string{"127.0.0.1:1, 127.0.0.2:2"}) {
+			t.Errorf("%d lookups, sets %q", calls, sets)
+		}
+	})
 }

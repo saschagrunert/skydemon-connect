@@ -15,9 +15,9 @@ var (
 	procAllocConsole = kernel32.NewProc("AllocConsole")
 )
 
-// utf16Ptr converts s for a Win32 call. Our strings never contain NUL;
+// UTF16Ptr converts s for a Win32 call. Our strings never contain NUL;
 // if one did, the call gets an empty string.
-func utf16Ptr(s string) *uint16 {
+func UTF16Ptr(s string) *uint16 {
 	p, err := syscall.UTF16PtrFromString(s)
 	if err != nil {
 		return &[]uint16{0}[0]

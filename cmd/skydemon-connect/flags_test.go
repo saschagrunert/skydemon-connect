@@ -15,17 +15,19 @@ func TestParseFlags(t *testing.T) {
 	t.Parallel()
 
 	c, _, err := parseFlags(nil)
-	if err != nil || c.udp != "auto" || c.baud != 115200 || c.name != "MSFS" {
+	if err != nil || !strings.HasPrefix(c.spec.Describe(), "auto") || c.baud != 115200 ||
+		c.name != "MSFS" {
 		t.Fatalf("defaults: %+v %v", c, err)
 	}
 
 	c, _, err = parseFlags([]string{"-udp", "127.0.0.1:49002", "-com", "COM11", "-auto"})
-	if err != nil || c.udp != "127.0.0.1:49002" || c.com != "COM11" || !c.auto {
+	if err != nil || c.spec.Describe() != "127.0.0.1:49002" || c.com != "COM11" || !c.auto {
 		t.Errorf("flags: %+v %v", c, err)
 	}
 
 	_, usage, err := parseFlags([]string{"-hz", "10"}) // removed: always 30 Hz
-	if err == nil || !strings.HasPrefix(usage, "flag provided but not defined: -hz\n") ||
+	if err == nil || !errors.Is(err, errUnknown) ||
+		!strings.HasPrefix(usage, "unknown option -hz\n") ||
 		!strings.HasSuffix(usage, "Run with -help to see the options.") {
 		t.Errorf("unknown flag: %v, usage %q", err, usage)
 	}
@@ -62,9 +64,11 @@ func TestParseFlagsValidates(t *testing.T) {
 		{errName, []string{"-name="}},
 		{errName, []string{"-name", "Flugsimulator für zu Hause"}},
 		{errName, []string{"-name", strings.Repeat("x", maxName+1)}},
-		{errDemoLat, []string{"-demo-lat", "90"}},
-		{errDemoLat, []string{"-demo-lat", "NaN"}},
-		{errDemoLon, []string{"-demo-lon", "-181"}},
+		{errDemoLat, []string{"-demo", "-demo-lat", "90"}},
+		{errDemoLat, []string{"-demo", "-demo-lat", "NaN"}},
+		{errDemoLon, []string{"-demo", "-demo-lon", "-181"}},
+		{errDemoPlace, []string{"-demo-lat", "50"}},
+		{errDemoPlace, []string{"-demo-lon", "10"}},
 	} {
 		_, usage, err := parseFlags(tc.args)
 		if !errors.Is(err, tc.want) ||

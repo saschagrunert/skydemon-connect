@@ -148,7 +148,7 @@ jobs:
         run: |
           if [[ "$GITHUB_EVENT_NAME" != push ]] ||
             ! files=$(git diff --name-only "$BEFORE" HEAD 2>/dev/null) ||
-            grep -qE '^(Makefile|go\.mod|LICENSE|NOTICE\.md|internal/(zipfiles|simconnect)/|tools/|\.github/workflows/ci\.yml)' <<<"$files"; then
+            grep -qE '^(Makefile|go\.mod|LICENSE|NOTICE\.md|internal/(zipfiles|simconnect)/|tools/|\.github/workflows/(ci|simconnect-dll)\.yml)' <<<"$files"; then
             echo build=true >> "$GITHUB_OUTPUT"
           fi
       - if: steps.changed.outputs.build == 'true'
@@ -168,13 +168,19 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  # The real SimConnect.dll on Windows: every function the app uses is
-  # bound, and without MSFS an open fails as the app expects.
   simconnect-dll:
     needs: bundle
     if: needs.bundle.outputs.built == 'true'
+    uses: ./.github/workflows/simconnect-dll.yml
+    with:
+      artifact: simconnect-dll
+
+  # The Makefile's Windows-host path (.exe tools, the zipped golangci-lint,
+  # unzip), in Git Bash as a contributor on Windows would run it.
+  make-windows:
+    if: github.event_name != 'schedule'
     runs-on: windows-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -183,22 +189,15 @@ jobs:
         with:
           go-version-file: go.mod
           cache: false
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: simconnect-dll
-          path: dll
-      # The artifact keeps the path below the upload's wildcard, e.g.
-      # sdk-1.8.2/SimConnect.dll.
       - run: |
-          shopt -s nullglob
-          dlls=(dll/*/SimConnect.dll dll/SimConnect.dl[l]) # patterns, so that nullglob drops missing ones
-          if (( ${#dlls[@]} != 1 )); then
-            echo "::error::want one SimConnect.dll in the artifact, got: ${dlls[*]}"
-            exit 1
+          missing=()
+          for tool in make unzip; do
+            command -v "$tool" >/dev/null || missing+=("$tool")
+          done
+          if (( ${#missing[@]} )); then
+            choco install -y --no-progress "${missing[@]}"
           fi
-          SKYDEMONCONNECT_SIMCONNECT_DLL="$(cygpath -w "$PWD/${dlls[0]}")"
-          export SKYDEMONCONNECT_SIMCONNECT_DLL
-          go test -count=1 -run TestRealDLL -v ./internal/simconnect
+      - run: make lint build
 
   tidy:
     if: github.event_name != 'schedule'

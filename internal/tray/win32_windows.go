@@ -183,17 +183,6 @@ type iconInfo struct {
 	HbmColor uintptr
 }
 
-// utf16Ptr converts s for a Win32 call. Our strings never contain NUL;
-// if one did, the call gets an empty string.
-func utf16Ptr(s string) *uint16 {
-	p, err := syscall.UTF16PtrFromString(s)
-	if err != nil {
-		return &[]uint16{0}[0]
-	}
-
-	return p
-}
-
 // copyUTF16 copies s into a fixed buffer, truncating and NUL-terminating.
 // A truncation never leaves half a surrogate pair behind.
 func copyUTF16(dst []uint16, s string) {

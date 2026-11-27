@@ -23,8 +23,10 @@ const (
 	unused          = 0xFFFFFFFF
 )
 
-// LoadLibraryEx flags: look for the DLL's own imports next to it and in
-// System32, never in the current directory or on PATH.
+// LoadLibraryEx flags: look for the DLL's own imports, e.g. the VC++
+// runtime, next to it, in the exe's folder and in System32, never in the
+// current directory or on PATH. Given to LoadLibraryEx, they replace the
+// process's default from SetDefaultDllDirectories for this load.
 const (
 	loadLibrarySearchDLLLoadDir  = 0x00000100
 	loadLibrarySearchDefaultDirs = 0x00001000
@@ -91,12 +93,12 @@ func loadLibrary(path string) (*syscall.DLL, error) {
 	return &syscall.DLL{Name: path, Handle: syscall.Handle(h)}, nil
 }
 
-// loadDLL loads the first of candidates that exists and loads. When one
-// exists but fails to load, that error is returned rather than "not
-// found".
+// loadDLL loads the first of candidates that exists. That one is final:
+// when it fails to load, its error is returned, and no later candidate is
+// tried. A DLL next to the exe, as the zip ships it, is then never swapped
+// for an SDK folder's, which may be one other users of the PC can write
+// to, e.g. C:\MSFS 2024 SDK.
 func loadDLL(candidates []string) (*syscall.DLL, error) {
-	var loadErr error
-
 	for _, p := range candidates {
 		_, err := os.Stat(p)
 		if err != nil {
@@ -104,17 +106,14 @@ func loadDLL(candidates []string) (*syscall.DLL, error) {
 		}
 
 		dll, err := loadLibrary(p)
-		if err == nil {
-			return dll, nil
+		if err != nil {
+			return nil, &setupError{
+				user:   loadFailure(err),
+				detail: fmt.Errorf("load %s: %w", p, err),
+			}
 		}
 
-		if loadErr == nil {
-			loadErr = &setupError{user: loadFailure(err), detail: fmt.Errorf("load %s: %w", p, err)}
-		}
-	}
-
-	if loadErr != nil {
-		return nil, loadErr
+		return dll, nil
 	}
 
 	return nil, &setupError{

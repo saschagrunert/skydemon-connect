@@ -389,10 +389,11 @@ func TestLoopSetupFixedOnOpen(t *testing.T) {
 
 	missing := &setupError{user: errNotFound, detail: errDetail}
 	got, _, _ := runLoop(t, missing,
-		&fakeConn{msgs: [][]byte{msgOpen(), msgEvent(eventSim, 0), msgQuit()}})
+		&fakeConn{msgs: [][]byte{msgOpen(), msgEvent(eventSim, 1), msgQuit()}})
 
-	// In the menu from the start: never live.
-	want := "failed: " + errNotFound.Error() + ",fixed,ended"
+	// Fixed as soon as the DLL opens, before the flight: not only once the
+	// session ended, which would show the error all flight long.
+	want := "failed: " + errNotFound.Error() + ",fixed,live,dead,ended"
 	if got != want {
 		t.Errorf("events %q, want %q", got, want)
 	}

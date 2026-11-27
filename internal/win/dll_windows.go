@@ -4,12 +4,14 @@ package win
 
 var procSetDefaultDllDirectories = kernel32.NewProc("SetDefaultDllDirectories")
 
-// RestrictDLLSearch makes libraries that load other DLLs later, e.g.
-// SimConnect.dll or shell extensions, find them in the exe's folder and
-// System32 only, not in the working directory (MSFS's, with -auto) or PATH.
-// Call it first thing, before anything shows a window.
+// RestrictDLLSearch makes a DLL loaded by name, e.g. by a shell extension
+// or later by SimConnect.dll, come from System32 only: not from the
+// working directory (MSFS's, with -auto), PATH, or the exe's folder, which
+// may be a Downloads folder full of other files. SimConnect.dll itself is
+// loaded by its full path with flags of its own, which this doesn't
+// change. Call it first thing, before anything shows a window.
 func RestrictDLLSearch() {
-	const searchDefaultDirs = 0x00001000 // LOAD_LIBRARY_SEARCH_DEFAULT_DIRS
+	const searchSystem32 = 0x00000800 // LOAD_LIBRARY_SEARCH_SYSTEM32
 
-	_, _, _ = procSetDefaultDllDirectories.Call(searchDefaultDirs)
+	_, _, _ = procSetDefaultDllDirectories.Call(searchSystem32)
 }

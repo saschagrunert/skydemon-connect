@@ -87,6 +87,9 @@ type tray struct {
 	added bool
 	// iconFailed: that failure was logged; logged again once it worked.
 	iconFailed bool
+	// pending is the latest balloon that couldn't be shown without the
+	// icon, e.g. that SimConnect.dll is missing; shown once it is added.
+	pending *balloonText
 	// modal: a message box is open; tray clicks are ignored until it is
 	// closed, so that the menu can't run a second command meanwhile.
 	modal bool
@@ -229,7 +232,7 @@ func (t *tray) ownedError(text string) {
 
 func (t *tray) create() error {
 	inst, _, _ := procGetModuleHandleW.Call(0)
-	cls, title := utf16Ptr(className), utf16Ptr("SkyDemonConnect")
+	cls, title := win.UTF16Ptr(className), win.UTF16Ptr("SkyDemonConnect")
 
 	wc := wndClassEx{WndProc: syscall.NewCallback(t.wndProc), Instance: inst, ClassName: cls}
 	wc.Size = uint32(unsafe.Sizeof(wc))
@@ -284,7 +287,7 @@ func (t *tray) create() error {
 // lets Explorer's messages through: when the app runs elevated (started by
 // an elevated MSFS), UIPI drops them, as Explorer runs unelevated.
 func (t *tray) allowShellMessages() {
-	name := utf16Ptr("TaskbarCreated")
+	name := win.UTF16Ptr("TaskbarCreated")
 	t.taskbarCreated, _, _ = procRegisterWindowMessageW.Call(uintptr(unsafe.Pointer(name)))
 
 	for _, m := range []uintptr{t.taskbarCreated, wmTray} {
@@ -326,6 +329,12 @@ func (t *tray) showIcon() {
 		t.iconFailed = false
 		t.opts.Log.Printf("tray: icon shown")
 	}
+
+	if t.added && t.pending != nil {
+		b := *t.pending
+		t.pending = nil
+		t.balloon(b.title, b.text, b.flags)
+	}
 }
 
 // removeIcon takes the icon out of the notification area, also when an
@@ -341,6 +350,8 @@ func (t *tray) removeIcon() {
 func (t *tray) refresh() {
 	st := t.opts.Feed.Status()
 	handle, tip := t.icons[st.Kind], tooltip(st.String())
+
+	t.dropStaleProblem(st)
 
 	if !t.added || handle != t.shownIcon || tip != t.shownTip {
 		t.nid.Icon = handle
@@ -363,12 +374,32 @@ func (t *tray) refresh() {
 	}
 }
 
+// dropStaleProblem forgets a queued problem balloon once st is no longer
+// that problem: one that is over by the time the icon is there isn't news.
+func (t *tray) dropStaleProblem(st feed.Status) {
+	if p := t.pending; p != nil && p.flags == niifError &&
+		(st.Kind != feed.Failed || st.Err != p.text) {
+		t.pending = nil
+	}
+}
+
+// balloonText is a balloon to show.
+type balloonText struct {
+	title, text string
+	flags       uint32
+}
+
+// balloon shows a balloon at the icon. Without the icon, there is nothing
+// to show it at: the latest one is kept until showIcon added the icon.
 func (t *tray) balloon(title, text string, flags uint32) {
 	t.nid.InfoFlags = flags
 
 	copyUTF16(t.nid.InfoTitle[:], title)
 	copyUTF16(t.nid.Info[:], text)
-	t.shell(nimModify, nifInfo)
+
+	if !t.added || !t.shell(nimModify, nifInfo) {
+		t.pending = &balloonText{title: title, text: text, flags: flags}
+	}
 }
 
 // session handles Windows ending the session (logoff, shutdown): the
@@ -400,11 +431,8 @@ func (t *tray) endSession() {
 	_, _, _ = procPostQuitMessage.Call(0)
 }
 
-func (t *tray) quit() {
-	t.removeIcon()
-
-	_, _, _ = procPostQuitMessage.Call(0)
-}
+// quit ends the message loop; Run's destroy then removes the icon.
+func (t *tray) quit() { _, _, _ = procPostQuitMessage.Call(0) }
 
 // loop runs the message loop until WM_QUIT, or GetMessage fails.
 func (t *tray) loop() error {
@@ -441,7 +469,7 @@ func appendMenu(handle uintptr, item menuItem) {
 		flags |= mfChecked
 	}
 
-	p := utf16Ptr(item.text)
+	p := win.UTF16Ptr(item.text)
 	_, _, _ = procAppendMenuW.Call(handle, flags, uintptr(item.id), uintptr(unsafe.Pointer(p)))
 }
 
@@ -511,7 +539,7 @@ func (t *tray) openLog() {
 		return
 	}
 
-	verb, path := utf16Ptr("open"), utf16Ptr(t.opts.LogPath)
+	verb, path := win.UTF16Ptr("open"), win.UTF16Ptr(t.opts.LogPath)
 
 	r, _, err := procShellExecuteW.Call(0, uintptr(unsafe.Pointer(verb)),
 		uintptr(unsafe.Pointer(path)), 0, 0, swShowNormal)

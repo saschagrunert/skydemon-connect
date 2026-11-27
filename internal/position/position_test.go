@@ -3,6 +3,7 @@ package position_test
 import (
 	"math"
 	"testing"
+	"time"
 
 	"github.com/saschagrunert/skydemon-connect/internal/position"
 )
@@ -10,12 +11,21 @@ import (
 func TestNorm360(t *testing.T) {
 	t.Parallel()
 
-	for in, want := range map[float64]float64{
-		0: 0, 360: 0, 370: 10, -10: 350, -730: 350, 359.5: 359.5, -1e-15: 0, math.Copysign(0, -1): 0,
+	// A slice, not a map: 0 and -0 are the same map key, so one of them
+	// would be dropped.
+	for _, tc := range []struct{ in, want float64 }{
+		{0, 0},
+		{math.Copysign(0, -1), 0},
+		{360, 0},
+		{370, 10},
+		{-10, 350},
+		{-730, 350},
+		{359.5, 359.5},
+		{-1e-15, 0},
 	} {
-		got := position.Norm360(in)
-		if got != want || math.Signbit(got) || got >= 360 {
-			t.Errorf("Norm360(%v) = %v, want %v", in, got, want)
+		got := position.Norm360(tc.in)
+		if got != tc.want || math.Signbit(got) || got >= 360 {
+			t.Errorf("Norm360(%v) = %v, want %v", tc.in, got, tc.want)
 		}
 	}
 }
@@ -100,5 +110,46 @@ func TestIsFinite(t *testing.T) {
 		if bad.IsFinite() {
 			t.Errorf("%+v is not finite", bad)
 		}
+	}
+}
+
+func TestAhead(t *testing.T) {
+	t.Parallel()
+
+	const second = time.Second
+
+	// 100 kt for a second is 51.4 m: north is latitude, east longitude
+	// shrunk by the cosine of 60°.
+	ahead := func(s position.Sample, d time.Duration) position.Sample { return s.Ahead(d) }
+
+	north := ahead(position.Sample{Lat: 60, Lon: 10, GSKnots: 100, TrackTrue: 0}, second)
+	if dLat := (north.Lat - 60) * 111195; math.Abs(dLat-51.44) > 0.05 || north.Lon != 10 {
+		t.Errorf("north: %+v, %.2f m", north, dLat)
+	}
+
+	east := ahead(position.Sample{Lat: 60, Lon: 10, GSKnots: 100, TrackTrue: 90}, second)
+	if dLon := (east.Lon - 10) * 111195 * 0.5; math.Abs(dLon-51.44) > 0.05 ||
+		math.Abs(east.Lat-60) > 1e-9 {
+		t.Errorf("east: %+v, %.2f m", east, dLon)
+	}
+
+	across := ahead(position.Sample{Lat: 0.5, Lon: 179.99999, GSKnots: 500, TrackTrue: 90}, second)
+	if across.Lon > -179.99 || across.Lon < -180 {
+		t.Errorf("across the antimeridian: %+v", across)
+	}
+
+	for name, s := range map[string]position.Sample{
+		"standing":    {Lat: 51, Lon: 12, TrackTrue: 90},
+		"at a pole":   {Lat: 90, Lon: 12, GSKnots: 100},
+		"past a pole": {Lat: 89.99999, Lon: 12, GSKnots: 500},
+	} {
+		if got := s.Ahead(second); got != s {
+			t.Errorf("%s: moved to %+v", name, got)
+		}
+	}
+
+	s := position.Sample{Lat: 51, Lon: 12, GSKnots: 100}
+	if got := s.Ahead(-second); got != s {
+		t.Errorf("back in time: moved to %+v", got)
 	}
 }

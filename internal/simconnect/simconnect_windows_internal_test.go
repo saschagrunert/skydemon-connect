@@ -69,6 +69,32 @@ func TestLoadDLLWrongArchitecture(t *testing.T) {
 	}
 }
 
+// The first DLL that exists is final: when it doesn't load, the next one
+// is not tried, although it would load.
+func TestLoadDLLFirstIsFinal(t *testing.T) {
+	t.Parallel()
+
+	broken := filepath.Join(t.TempDir(), "SimConnect.dll")
+
+	err := os.WriteFile(broken, []byte("not a DLL"), 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	good := filepath.Join(os.Getenv("SystemRoot"), "System32", "version.dll")
+
+	dll, err := loadDLL([]string{broken, good})
+	if err == nil {
+		_ = dll.Release()
+
+		t.Fatal("loaded the second DLL")
+	}
+
+	if _, ok := errors.AsType[*setupError](err); !ok {
+		t.Errorf("got %v, want a setup error", err)
+	}
+}
+
 // A 64-bit DLL that isn't SimConnect lacks its functions.
 func TestBindWrongDLL(t *testing.T) {
 	t.Parallel()

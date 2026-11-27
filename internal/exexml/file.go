@@ -36,48 +36,88 @@ func update(path string, enable bool, exePath, commandLine string) error {
 		return err
 	}
 
+	b, existed, err := change(orig, enable, exePath, commandLine)
+	if err != nil || b == nil {
+		return err
+	}
+
+	// A file that wasn't there is backed up as one without entries.
+	before := orig
+	if !existed {
+		before = []byte(skeleton)
+	} else if readOnly(path) {
+		return errReadOnly
+	}
+
+	return save(path, orig, before, b)
+}
+
+// settable returns the text of the file at path, as update reads it, and
+// whether update could add our entry to it: it can be read and decoded,
+// and has room for the entry, or has it already.
+func settable(path, exePath, commandLine string) (string, bool) {
+	path, err := resolve(path)
+	if err != nil {
+		return "", false
+	}
+
+	orig, err := readRaw(path)
+	if err != nil {
+		return "", false
+	}
+
+	b, existed, err := change(orig, true, exePath, commandLine)
+	if err != nil || b != nil && existed && readOnly(path) {
+		return "", false
+	}
+
+	doc, _, err := decodeFile(orig)
+
+	return doc, err == nil
+}
+
+// change returns the file orig with our entry added or removed, nil if
+// that changes nothing, and whether orig is a file at all, not missing or
+// blank.
+func change(orig []byte, enable bool, exePath, commandLine string) ([]byte, bool, error) {
 	doc, enc, err := decodeFile(orig)
 	if err != nil {
-		return err
+		return nil, true, err
 	}
 
 	existed := doc != ""
-	if !existed && !enable {
-		return nil // nothing to remove, and no reason to create the file
+
+	switch {
+	case !existed && !enable:
+		return nil, existed, nil // nothing to remove, and no reason to create the file
+	case enable && entryState(doc, exePath, commandLine) == Ours:
+		return nil, existed, nil // already there, e.g. on a retry after another file failed
 	}
 
 	out, err := edited(doc, enable, exePath, commandLine, enc)
-	if err != nil {
-		return err
-	}
-
-	if out == doc {
-		return nil
+	if err != nil || out == doc {
+		return nil, existed, err
 	}
 
 	b, err := enc.encode(out)
-	if err != nil {
-		return err
-	}
 
-	return save(path, orig, b, existed)
+	return b, existed, err
 }
 
-// save writes b over the file at path that held orig, after backing up an
-// existing one. It is checked for another installer's change before the
-// backup, so that the backup is of what this change starts from, and again
-// before the write, so as not to undo one made during the backup.
-func save(path string, orig, b []byte, existed bool) error {
+// save writes b over the file at path that held orig, after backing up
+// before, what orig means. It is checked for another installer's change
+// before the backup, so that the backup is of what this change starts
+// from, and again before the write, so as not to undo one made during the
+// backup.
+func save(path string, orig, before, b []byte) error {
 	err := unchanged(path, orig)
 	if err != nil {
 		return err
 	}
 
-	if existed {
-		err = backup(path, orig)
-		if err != nil {
-			return fmt.Errorf("backup: %w", err)
-		}
+	err = backup(path, before)
+	if err != nil {
+		return fmt.Errorf("backup: %w", err)
 	}
 
 	err = unchanged(path, orig)
@@ -236,17 +276,6 @@ func replace(
 	}
 
 	return err
-}
-
-// read returns the file's text and encoding. A missing or blank file reads
-// as empty, in the skeleton's encoding.
-func read(path string) (string, encoding, error) {
-	b, err := readRaw(path)
-	if err != nil {
-		return "", latin1, err
-	}
-
-	return decodeFile(b)
 }
 
 // readRaw returns the file's bytes; a missing file has none.

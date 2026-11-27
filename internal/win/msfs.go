@@ -9,5 +9,6 @@ func isMSFS(path string) bool {
 	// is tested everywhere.
 	name := path[strings.LastIndexAny(path, `\/`)+1:]
 
-	return strings.HasPrefix(strings.ToLower(name), "flightsimulator")
+	return strings.EqualFold(name, "FlightSimulator2024.exe") ||
+		strings.EqualFold(name, "FlightSimulator.exe")
 }

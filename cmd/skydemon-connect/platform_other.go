@@ -3,7 +3,9 @@
 package main
 
 import (
+	"context"
 	"fmt"
+	"log"
 	"os"
 )
 
@@ -22,6 +24,13 @@ func run(c *config) int {
 
 	return 0
 }
+
+// onSessionEnd has no session end to wait for outside Windows: SIGTERM
+// covers it.
+func onSessionEnd(func()) {}
+
+// watchMSFS has no MSFS to watch outside Windows.
+func watchMSFS(ctx context.Context, _ *log.Logger) (context.Context, bool) { return ctx, false }
 
 func notify(text string, isErr bool) {
 	out := os.Stdout

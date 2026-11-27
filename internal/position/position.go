@@ -2,7 +2,10 @@
 // the outputs, in the units and sign conventions the outputs use.
 package position
 
-import "math"
+import (
+	"math"
+	"time"
+)
 
 const (
 	// KnotsToMetersPerSecond converts knots to m/s: a knot is 1852 m an
@@ -14,6 +17,15 @@ const (
 	DegPerRad = 180 / math.Pi
 
 	fullCircle = 360.0
+	halfCircle = 180.0
+	maxLat     = 90.0
+
+	// earthRadius is the mean radius of the earth in metres; over the few
+	// metres Ahead moves, the earth's flattening doesn't matter.
+	earthRadius = 6371008.8
+	// minCosLat keeps Ahead away from the poles, where a step east is a
+	// division by almost zero.
+	minCosLat = 1e-6
 
 	// Positions closer than this to 0°/0° are treated as "no position":
 	// SimConnect reports them while the sim loads or sits in its menu.
@@ -50,6 +62,42 @@ func (s *Sample) IsFinite() bool {
 	}
 
 	return true
+}
+
+// Ahead returns s moved for d along its track at its ground speed, where a
+// GPS fix taken d later would put it. Altitude and attitude stay. A d of
+// zero or less, a standing aircraft or one at a pole is not moved.
+func (s *Sample) Ahead(d time.Duration) Sample {
+	out := *s
+
+	dist := s.GSKnots * KnotsToMetersPerSecond * d.Seconds()
+	if dist <= 0 {
+		return out
+	}
+
+	cosLat := math.Cos(s.Lat / DegPerRad)
+	if cosLat < minCosLat {
+		return out
+	}
+
+	trk := s.TrackTrue / DegPerRad
+	lat := s.Lat + dist*math.Cos(trk)/earthRadius*DegPerRad
+	lon := s.Lon + dist*math.Sin(trk)/(earthRadius*cosLat)*DegPerRad
+
+	if math.Abs(lat) > maxLat {
+		return out
+	}
+
+	// Across the antimeridian.
+	if lon > halfCircle {
+		lon -= fullCircle
+	} else if lon < -halfCircle {
+		lon += fullCircle
+	}
+
+	out.Lat, out.Lon = lat, lon
+
+	return out
 }
 
 // Norm360 normalises an angle in degrees to [0, 360), without negative

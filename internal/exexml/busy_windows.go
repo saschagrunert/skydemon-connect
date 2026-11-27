@@ -4,6 +4,7 @@ package exexml
 
 import (
 	"errors"
+	"os"
 	"syscall"
 )
 
@@ -13,6 +14,15 @@ const (
 	errSharingViolation = syscall.Errno(32)
 	errLockViolation    = syscall.Errno(33)
 )
+
+// readOnly reports whether path has the read-only attribute, which Go
+// shows as a mode without write permission. Replacing such a file fails
+// with access denied, which busy would retry.
+func readOnly(path string) bool {
+	info, err := os.Stat(path)
+
+	return err == nil && info.Mode().Perm()&0o200 == 0
+}
 
 // busy reports whether err is a file another program has open for a
 // moment, e.g. a virus scanner, so that trying again is worth it. Access

@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/saschagrunert/skydemon-connect/internal/feed"
 	"github.com/saschagrunert/skydemon-connect/internal/position"
 	"github.com/saschagrunert/skydemon-connect/internal/testutil"
-	"github.com/saschagrunert/skydemon-connect/internal/tray"
 )
 
 func TestToSample(t *testing.T) {
@@ -264,8 +264,8 @@ func TestUserErrorsFitTheTooltip(t *testing.T) {
 	t.Parallel()
 
 	for _, err := range []error{errNotFound, errVCRuntime, errNot64Bit, errCantLoad, errOldDLL} {
-		if n := len(err.Error()); n > tray.MaxErrLen {
-			t.Errorf("%q: %d characters, room for %d", err, n, tray.MaxErrLen)
+		if n := len(err.Error()); n > feed.MaxErrLen {
+			t.Errorf("%q: %d characters, room for %d", err, n, feed.MaxErrLen)
 		}
 	}
 }

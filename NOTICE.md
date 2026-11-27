@@ -8,7 +8,8 @@ SDK.
 
 `SimConnect.dll` needs the Microsoft Visual C++ 2015-2022 runtime (x64),
 which most PCs that run MSFS already have; otherwise install
-`vc_redist.x64.exe` from Microsoft.
+[`vc_redist.x64.exe`](https://aka.ms/vs/17/release/vc_redist.x64.exe) from
+Microsoft.
 
 SkyDemonConnect is not affiliated with or endorsed by Microsoft, SkyDemon
 (Divelements Ltd) or ForeFlight.

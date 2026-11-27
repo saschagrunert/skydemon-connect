@@ -24,7 +24,7 @@ import (
 const Auto = "auto"
 
 var (
-	errSyntax   = errors.New("not host:port, e.g. 192.168.1.23:49002")
+	errSyntax   = errors.New("not host or host:port, e.g. 192.168.1.23:49002")
 	errAutoPort = errors.New(`"auto" takes no port`)
 	errNoHost   = errors.New("missing host")
 	errBadHost  = errors.New("not an IPv4 address or a host name")
@@ -37,14 +37,28 @@ var (
 // doesn't hold up the next network check.
 const lookupTimeout = 2 * time.Second
 
+// keepFailed is how many lookups of a host name in a row may fail before
+// its last address is dropped: one slow answer, e.g. of mDNS for
+// ipad.local, doesn't cut the tablet off until the next refresh.
+const keepFailed = 3
+
 // List is a list of UDP destinations.
 type List []netip.AddrPort
 
-// String lists the destinations for the log.
-func (l List) String() string {
+// String lists the destinations for the log, e.g. "127.0.0.1:49002,
+// 192.168.1.255:49002".
+func (l List) String() string { return l.Format(0) }
+
+// Format lists the destinations, leaving out the port where it is
+// omitPort, e.g. "127.0.0.1, 192.168.1.23:4000" for the menu. With
+// omitPort 0 every port is shown. An empty list is "".
+func (l List) Format(omitPort uint16) string {
 	s := make([]string, len(l))
 	for i, a := range l {
 		s[i] = a.String()
+		if omitPort != 0 && a.Port() == omitPort {
+			s[i] = a.Addr().String()
+		}
 	}
 
 	return strings.Join(s, ", ")
@@ -75,8 +89,8 @@ type Spec struct {
 }
 
 // Parse parses a comma-separated list of host:port targets and the Auto
-// keyword. Auto targets use port. Host names are only checked for syntax
-// here; a Resolver looks them up.
+// keyword. Auto targets, and targets given without a port, use port. Host
+// names are only checked for syntax here; a Resolver looks them up.
 func Parse(list string, port uint16) (*Spec, error) {
 	spec := &Spec{port: port}
 
@@ -119,13 +133,32 @@ func (s *Spec) Dynamic() bool { return s.auto || len(s.hosts) > 0 }
 type Resolver struct {
 	spec   *Spec
 	lookup lookupFunc
+	log    *log.Logger
 	// errs logs each host name's lookup failures once per change.
 	errs *report.Reporter
+	// last holds each host name's last address, for keepFailed failed
+	// lookups.
+	last map[hostPort]lastGood
+	mu   sync.Mutex
 }
 
-// Resolver returns a Resolver for s that logs lookup failures to l.
+// lastGood is a host name's last address, and how many lookups failed
+// since.
+type lastGood struct {
+	addr   netip.AddrPort
+	failed int
+}
+
+// Resolver returns a Resolver for s that logs to l.
 func (s *Spec) Resolver(l *log.Logger) *Resolver {
-	return &Resolver{spec: s, lookup: lookupIPv4, errs: report.New(l)}
+	return &Resolver{
+		spec:   s,
+		lookup: lookupIPv4,
+		log:    l,
+		errs:   report.New(l),
+		last:   map[hostPort]lastGood{},
+		mu:     sync.Mutex{},
+	}
 }
 
 // Known returns the destinations that need no name lookup: the literal
@@ -137,8 +170,9 @@ func (r *Resolver) Known() List {
 
 // Resolve returns the destinations for the current network configuration.
 // Host names are looked up in parallel, each within lookupTimeout; one that
-// doesn't resolve is left out until it does. A lookup cut short by ctx is
-// not logged: that is a shutdown, not a failure.
+// doesn't resolve keeps its last address for keepFailed lookups, and is
+// then left out until it resolves again. A lookup cut short by ctx is not
+// logged: that is a shutdown, not a failure.
 func (r *Resolver) Resolve(ctx context.Context) List {
 	s := r.spec
 	// An invalid (zero) address stands for a name that didn't resolve.
@@ -151,9 +185,8 @@ func (r *Resolver) Resolve(ctx context.Context) List {
 			a, err := r.resolve(ctx, h)
 			if ctx.Err() == nil {
 				r.errs.Report("targets: "+h.String(), err)
+				found[i] = r.remember(h, a, err)
 			}
-
-			found[i] = a
 		})
 	}
 
@@ -168,6 +201,63 @@ func (r *Resolver) Resolve(ctx context.Context) List {
 	}
 
 	return dedupe(append(out, r.auto()...))
+}
+
+// Refresh calls set with the result of Resolve at once, for the host names
+// that Known leaves out, and then each time it changes from current,
+// checking every interval, until ctx is done.
+func (r *Resolver) Refresh(
+	ctx context.Context,
+	every time.Duration,
+	current List,
+	set func([]netip.AddrPort),
+) {
+	tick := time.NewTicker(every)
+	defer tick.Stop()
+
+	for {
+		next := r.Resolve(ctx)
+		if ctx.Err() != nil {
+			return // shutting down: lookups were cut short
+		}
+
+		if !slices.Equal(next, current) {
+			r.log.Printf("udp: sending to %s", next)
+			set(next)
+			current = next
+		}
+
+		select {
+		case <-ctx.Done():
+			return
+		case <-tick.C:
+		}
+	}
+}
+
+// remember returns the address to use for h after a lookup that gave a,
+// or err: a, or after a failure the last address while it is kept.
+func (r *Resolver) remember(h hostPort, a netip.AddrPort, err error) netip.AddrPort {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if err == nil {
+		r.last[h] = lastGood{addr: a, failed: 0}
+
+		return a
+	}
+
+	prev, ok := r.last[h]
+	if !ok || prev.failed >= keepFailed {
+		delete(r.last, h)
+
+		return netip.AddrPort{}
+	}
+
+	prev.failed++
+	r.last[h] = prev
+
+	return prev.addr
 }
 
 // auto returns this PC and the local networks' broadcast addresses, if the
@@ -311,16 +401,23 @@ func (s *Spec) Describe() string {
 	return strings.Join(parts, ", ")
 }
 
-// add adds one host:port target.
+// add adds one host:port target, or a host without a port, which gets
+// the spec's.
 func (s *Spec) add(target string) error {
-	host, portText, err := net.SplitHostPort(target)
-	if err != nil {
-		return errSyntax
-	}
+	host, port := target, uint64(s.port)
 
-	port, err := strconv.ParseUint(portText, 10, 16)
-	if err != nil || port == 0 {
-		return errNoPort
+	if strings.Contains(target, ":") {
+		h, portText, err := net.SplitHostPort(target)
+		if err != nil {
+			return errSyntax
+		}
+
+		host = h
+
+		port, err = strconv.ParseUint(portText, 10, 16)
+		if err != nil || port == 0 {
+			return errNoPort
+		}
 	}
 
 	if host == "" {
