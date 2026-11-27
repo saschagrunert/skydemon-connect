@@ -85,8 +85,10 @@ Every aircraft and helicopter MSFS simulates within 30 NM is sent to SkyDemon
 once a second, the 50 nearest if there are more, whoever created it: MSFS's
 own AI and live traffic, and traffic injectors such as BeyondATC or FSLTL.
 Whether MSFS 2024 hands out multiplayer aircraft this way is not verified
-yet. The label is the aircraft's ATC ID (registration or callsign), as MSFS
-shows it, or `T` and its made-up ICAO address without one. Traffic goes over
+yet. The label is the aircraft's ATC ID as MSFS shows it, for airliners
+mostly the registration rather than the flight number, or `T` and its
+made-up ICAO address without one. Airborne aircraft come first, parked ones
+last. Traffic goes over
 UDP only, as NMEA on `-com` has no traffic sentences, and so does
 `-test-traffic`. `-no-traffic` turns it off.
 

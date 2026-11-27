@@ -820,12 +820,14 @@ func TestNearest(t *testing.T) {
 			lon -= 360
 		}
 
-		traffic = append(traffic, position.Traffic{ICAO: uint32(i), Lat: own.Lat, Lon: lon})
+		traffic = append(traffic, position.Traffic{
+			ICAO: uint32(i), Lat: own.Lat, Lon: lon, Airborne: true,
+		})
 	}
 
 	slices.Reverse(traffic)
 
-	got := nearest(own, traffic, MaxTraffic)
+	got := nearest(own, traffic)
 	if len(got) != MaxTraffic {
 		t.Fatalf("%d targets, want %d", len(got), MaxTraffic)
 	}
@@ -836,7 +838,38 @@ func TestNearest(t *testing.T) {
 		}
 	}
 
-	if few := traffic[:3]; len(nearest(own, few, MaxTraffic)) != 3 {
+	if few := traffic[:3]; len(nearest(own, few)) != 3 {
 		t.Error("fewer than MaxTraffic not all sent")
+	}
+}
+
+// At a busy airport, the aircraft on final 3 NM out comes before the ones
+// parked next to the own, and one taxiing before those parked.
+func TestNearestAirborneFirst(t *testing.T) {
+	t.Parallel()
+
+	own := position.Sample{Lat: 51.4, Lon: 12.2}
+
+	traffic := make([]position.Traffic, 0, MaxTraffic+12)
+	for i := range MaxTraffic + 10 {
+		traffic = append(traffic, position.Traffic{
+			Callsign: "PARKED", ICAO: uint32(i), Lat: own.Lat + float64(i)*1e-5, Lon: own.Lon,
+		})
+	}
+
+	taxi := position.Traffic{Callsign: "TAXI", Lat: own.Lat + 0.01, Lon: own.Lon, GSKnots: 15}
+	final := position.Traffic{
+		Callsign: "FINAL", Lat: own.Lat + 0.05, Lon: own.Lon, GSKnots: 140, Airborne: true,
+	}
+	traffic = append(traffic, taxi, final)
+
+	got := nearest(own, traffic)
+	if len(got) != MaxTraffic || got[0].Callsign != "FINAL" || got[1].Callsign != "TAXI" {
+		t.Fatalf("first %+v, %+v", got[0], got[1])
+	}
+
+	// The parked ones fill the rest, nearest first.
+	if got[2].ICAO != 0 || got[MaxTraffic-1].ICAO != MaxTraffic-3 {
+		t.Errorf("parked from %d to %d", got[2].ICAO, got[MaxTraffic-1].ICAO)
 	}
 }

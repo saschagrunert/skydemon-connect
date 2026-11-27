@@ -330,21 +330,45 @@ func TestLoopTraffic(t *testing.T) {
 	})
 }
 
-// A traffic request that fails, as once the pipe is gone, ends the
-// session.
+// A traffic request that fails ends the session's traffic, not the
+// session: the positions go on, and traffic isn't asked for again.
 func TestSessionTrafficRequestFails(t *testing.T) {
 	t.Parallel()
 
 	synctest.Test(t, func(t *testing.T) {
-		var r trafficRecorder
+		var (
+			r   trafficRecorder
+			out testutil.Buffer
+		)
 
-		c := &fakeConn{requestErr: errFake, msgs: [][]byte{msgOpen()}}
+		c := &fakeConn{
+			requestErr: errFake,
+			msgs:       [][]byte{msgOpen(), msgEvent(eventSim, 1)},
+		}
+		c.onTraffic = func(c *fakeConn, request, objectType, radius uint32) {
+			r.ask(request, objectType, radius)
 
-		connected, err := session(t.Context(), testutil.Log(t),
+			// Later frames still come: the session goes on.
+			c.msgs = append(c.msgs, goldenData(t), msgQuit())
+		}
+
+		connected, err := session(t.Context(), log.New(&out, "", 0),
 			func(string) (conn, error) { return c, nil }, r.handlers())
-		if !connected || !errors.Is(err, errFake) ||
-			!strings.Contains(err.Error(), "connection lost: request traffic") {
+		if !connected || !errors.Is(err, errQuit) {
 			t.Errorf("connected %v, err %v", connected, err)
+		}
+
+		want := "simconnect: no traffic: request traffic: fake"
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("log %q, want %q", out.String(), want)
+		}
+
+		if want = "traffic=,live,update"; r.String() != want {
+			t.Errorf("events %q, want %q", r.String(), want)
+		}
+
+		if len(r.asks) != 1 {
+			t.Errorf("asked %q, want once", r.asks)
 		}
 	})
 }
