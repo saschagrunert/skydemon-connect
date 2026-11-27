@@ -7,6 +7,9 @@ import (
 	"os"
 )
 
+// prepare has nothing to do outside Windows.
+func prepare() {}
+
 // Outside Windows there is no simulator; the console mode is useful with
 // -demo for testing.
 func run(c *config) int {

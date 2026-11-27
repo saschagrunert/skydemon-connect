@@ -591,7 +591,7 @@ func TestSetLeavesNoTempFiles(t *testing.T) {
 		names = append(names, e.Name())
 	}
 
-	if len(names) != 2 { // exe.xml and its backup
+	if len(names) != 3 { // exe.xml, its first and its latest backup
 		t.Errorf("files left behind: %v", names)
 	}
 }
@@ -879,24 +879,170 @@ func TestSetSymlink(t *testing.T) {
 	}
 }
 
-// A file that changed after it was read isn't overwritten.
-func TestWriteIfUnchanged(t *testing.T) {
+// A file that changed after it was read isn't overwritten, nor backed up
+// as if this change had started from it.
+func TestSaveIfUnchanged(t *testing.T) {
 	t.Parallel()
 
-	path := filepath.Join(t.TempDir(), "exe.xml")
+	dir := t.TempDir()
+	path := filepath.Join(dir, "exe.xml")
 
 	err := os.WriteFile(path, []byte("theirs"), 0o600)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	err = writeIfUnchanged(path, []byte("before"), []byte("ours"))
+	err = save(path, []byte("before"), []byte("ours"), true)
 	if !errors.Is(err, errChanged) || readFile(t, path) != "theirs" {
 		t.Errorf("err %v, file %q", err, readFile(t, path))
 	}
 
-	err = writeIfUnchanged(path, []byte("theirs"), []byte("ours"))
+	if left, _ := filepath.Glob(filepath.Join(dir, "exe.xml.*")); len(left) != 0 {
+		t.Errorf("backed up although nothing was changed: %q", left)
+	}
+
+	err = save(path, []byte("theirs"), []byte("ours"), true)
 	if err != nil || readFile(t, path) != "ours" {
 		t.Errorf("err %v, file %q", err, readFile(t, path))
+	}
+}
+
+// The first backup is kept for good; the latest one is replaced before
+// every change, so that another installer's entry, added since the first
+// change, can be got back too.
+func TestBackupFirstAndPrevious(t *testing.T) {
+	t.Parallel()
+
+	installs, store, _ := setup(t)
+
+	err := os.WriteFile(store, []byte(sample), 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = installs.Set(true, `C:\x.exe`, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Another installer adds its entry meanwhile.
+	withOther := strings.Replace(readFile(t, store), docClose,
+		"<Launch.Addon><Name>Other</Name></Launch.Addon>\r\n"+docClose, 1)
+
+	err = os.WriteFile(store, []byte(withOther), 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = installs.Set(false, `C:\x.exe`, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got := readFile(t, store+backupExt); got != sample {
+		t.Errorf("first backup changed:\n%s", got)
+	}
+
+	if got := readFile(t, store+prevExt); got != withOther {
+		t.Errorf("latest backup is not the file before the latest change:\n%s", got)
+	}
+}
+
+// The backup holds the bytes the change was made from, not whatever is in
+// the file by the time the backup is written.
+func TestBackupUsesBytesRead(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "exe.xml")
+
+	err := os.WriteFile(path, []byte("changed by another installer"), 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = backup(path, []byte(sample))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, ext := range []string{backupExt, prevExt} {
+		if got := readFile(t, path+ext); got != sample {
+			t.Errorf("%s: %q", ext, got)
+		}
+	}
+}
+
+func TestBackupPrevNotAFile(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "exe.xml")
+
+	err := os.Mkdir(path+prevExt, 0o700)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = backup(path, []byte(sample))
+	if !errors.Is(err, errNotFile) {
+		t.Errorf("backup over a directory: %v", err)
+	}
+}
+
+// Our entry lost its closing tag, and the next add-on's opening tag has a
+// space: removing ours must not take the other one with it.
+func TestRemoveBrokenEntryKeepsNext(t *testing.T) {
+	t.Parallel()
+
+	doc := "<Launch.Addon><Name>SkyDemonConnect</Name><Path>x</Path>" +
+		"<Launch.Addon ><Name>A</Name></Launch.Addon>"
+
+	if got := remove(doc); got != doc {
+		t.Errorf("remove took another entry:\n%q", got)
+	}
+
+	// A well-formed entry of ours after it is still found and removed.
+	ours := "<Launch.Addon id=\"2\"><Name>SkyDemonConnect</Name></Launch.Addon >"
+	if got := remove(doc + ours); got != doc {
+		t.Errorf("our entry with attributes not removed:\n%q", got)
+	}
+}
+
+// A block with a name other than ours, e.g. two names, is not ours.
+func TestOursNeedsOnlyOurName(t *testing.T) {
+	t.Parallel()
+
+	for block, want := range map[string]bool{
+		"<Launch.Addon><Name>SkyDemonConnect</Name></Launch.Addon>":               true,
+		"<Launch.Addon><Name> SkyDemonConnect </Name></Launch.Addon>":             true,
+		"<Launch.Addon><Name>SkyDemonConnect</Name><Name>A</Name></Launch.Addon>": false,
+		"<Launch.Addon><Path>SkyDemonConnect.exe</Path></Launch.Addon>":           false,
+		"<Launch.Addon><Name>SkyDemonConnect Extra</Name></Launch.Addon>":         false,
+	} {
+		if got := ours(block); got != want {
+			t.Errorf("ours(%q) = %v", block, got)
+		}
+	}
+}
+
+// A symlinked exe.xml whose target isn't there is left alone: replacing
+// the link with a new file would lose it.
+func TestSetBrokenSymlink(t *testing.T) {
+	t.Parallel()
+
+	installs, store, _ := setup(t)
+
+	err := os.Symlink(filepath.Join(t.TempDir(), "not-mounted", "exe.xml"), store)
+	if err != nil {
+		t.Skipf("no symlinks here: %v", err)
+	}
+
+	err = installs.Set(true, `C:\x.exe`, nil)
+	if !errors.Is(err, errBrokenLink) {
+		t.Errorf("Set over a broken link: %v", err)
+	}
+
+	fi, err := os.Lstat(store)
+	if err != nil || fi.Mode()&os.ModeSymlink == 0 {
+		t.Errorf("the link was replaced: %v %v", fi, err)
 	}
 }

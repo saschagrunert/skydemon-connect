@@ -26,8 +26,8 @@ func TestOpenOutputs(t *testing.T) {
 	}
 	defer outs.shutdown(&sync.WaitGroup{}, testutil.Log(t))
 
-	if len(outs.targets) == 0 || outs.UDP == nil || outs.Serial != nil {
-		t.Errorf("targets %v, udp %v, serial %v", outs.targets, outs.UDP, outs.Serial)
+	if len(outs.targets) == 0 || outs.conn == nil || outs.port != nil {
+		t.Errorf("targets %v, udp %v, serial %v", outs.targets, outs.conn, outs.port)
 	}
 }
 
@@ -85,7 +85,7 @@ func TestRunInputSimError(t *testing.T) {
 	}
 }
 
-func TestEndedQuits(t *testing.T) {
+func TestSessionEndQuits(t *testing.T) {
 	t.Parallel()
 
 	for _, tc := range []struct{ auto, watched, want bool }{
@@ -93,8 +93,8 @@ func TestEndedQuits(t *testing.T) {
 		{true, false, true},
 		{true, true, false}, // MSFS's own exit ends the app
 	} {
-		if got := endedQuits(tc.auto, tc.watched); got != tc.want {
-			t.Errorf("endedQuits(auto %v, watched %v) = %v", tc.auto, tc.watched, got)
+		if got := sessionEndQuits(tc.auto, tc.watched); got != tc.want {
+			t.Errorf("sessionEndQuits(auto %v, watched %v) = %v", tc.auto, tc.watched, got)
 		}
 	}
 }
@@ -113,7 +113,12 @@ func TestStartFeedQuit(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
 			c := flags(t, "-udp", conn.LocalAddr().String())
 
-			r, err := startFeed(t.Context(), c, input{sim: sim, endedQuits: quits}, testutil.Log(t))
+			r, err := startFeed(
+				t.Context(),
+				c,
+				input{sim: sim, quitOnSessionEnd: quits},
+				testutil.Log(t),
+			)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -124,11 +129,11 @@ func TestStartFeedQuit(t *testing.T) {
 			select {
 			case <-r.quit:
 				if !quits {
-					t.Error("quit when the session ended, without endedQuits")
+					t.Error("quit when the session ended, without quitOnSessionEnd")
 				}
 			default:
 				if quits {
-					t.Error("no quit when the session ended, with endedQuits")
+					t.Error("no quit when the session ended, with quitOnSessionEnd")
 				}
 			}
 		})
@@ -151,9 +156,9 @@ func TestRefreshTargets(t *testing.T) {
 			return targets.List{a, b}
 		}
 
-		var sets []targets.List
+		var sets [][]netip.AddrPort
 
-		set := func(l targets.List) { sets = append(sets, l) }
+		set := func(l []netip.AddrPort) { sets = append(sets, l) }
 
 		ctx, cancel := context.WithCancel(t.Context())
 		done := make(chan struct{})

@@ -13,7 +13,7 @@ import (
 
 var (
 	// ErrBaud is returned for a baud rate a COM port can't be set to.
-	ErrBaud = errors.New("baud rate must be 300 to 4294967295")
+	ErrBaud = errors.New("baud rate must be at least 300, e.g. 115200")
 
 	errClosed = errors.New("port closed")
 )
@@ -22,13 +22,22 @@ var (
 // which covers its time on the wire, minutes long.
 const minBaud = 300
 
-// CheckBaud returns baud as the DCB's 32-bit BaudRate, or ErrBaud.
+// CheckBaud returns baud as the DCB's 32-bit BaudRate, or ErrBaud. Above
+// the 32-bit range is rejected too, although ErrBaud doesn't say so: no
+// COM port gets near it.
 func CheckBaud(baud int) (uint32, error) {
 	if baud < minBaud || uint64(baud) > math.MaxUint32 {
 		return 0, fmt.Errorf("%w, not %d", ErrBaud, baud)
 	}
 
 	return uint32(baud), nil
+}
+
+// Working reports whether a write that wrote n bytes and returned err
+// still shows a working port: one that worked, or timed out after some
+// bytes, which is a slow port, or one nobody reads, not a lost one.
+func Working(n int, err error) bool {
+	return err == nil || errors.Is(err, io.ErrShortWrite) && n > 0
 }
 
 // Open returns a writer to the COM port name (e.g. "COM11") at baud, 8N1,
@@ -157,7 +166,7 @@ func (r *reopening) done(w io.WriteCloser, n int, err error) {
 	}
 
 	switch {
-	case err == nil, errors.Is(err, io.ErrShortWrite) && n > 0:
+	case Working(n, err):
 		r.timeouts = 0
 
 		return
@@ -267,10 +276,10 @@ const (
 	writeSlackMS = 100
 )
 
-// writeTimeouts returns the COMMTIMEOUTS write multiplier (ms per byte,
-// rounded up) and constant (ms) for baud, so that the timeout covers a
+// writeMultiplier returns the COMMTIMEOUTS write multiplier for baud, ms
+// per byte rounded up, so that with writeSlackMS added the timeout covers a
 // write's time on the wire.
-func writeTimeouts(baud uint32) (uint32, uint32) {
+func writeMultiplier(baud uint32) uint32 {
 	const msPerBit = bitsPerByte * msPerSecond
 
 	perByte := msPerBit / baud
@@ -278,5 +287,5 @@ func writeTimeouts(baud uint32) (uint32, uint32) {
 		perByte++
 	}
 
-	return perByte, writeSlackMS
+	return perByte
 }

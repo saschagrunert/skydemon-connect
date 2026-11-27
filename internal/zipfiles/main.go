@@ -6,6 +6,7 @@ package main
 
 import (
 	"archive/zip"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -20,6 +21,14 @@ const (
 	fileMode  = 0o644
 )
 
+// zipEpochYear is the earliest year a zip entry can hold (MS-DOS time).
+const zipEpochYear = 1980
+
+var (
+	errTooEarly  = errors.New("time is before 1980, which zip can't hold")
+	errDuplicate = errors.New("two files of the same name")
+)
+
 func main() {
 	if len(os.Args) < minArgs {
 		_, _ = fmt.Fprintln(os.Stderr, "usage: zipfiles <out.zip> <unix time> <file>...")
@@ -27,20 +36,34 @@ func main() {
 		os.Exit(exitUsage)
 	}
 
-	sec, err := strconv.ParseInt(os.Args[2], 10, 64)
-	if err == nil {
-		err = write(os.Args[1], time.Unix(sec, 0).UTC(), os.Args[3:])
-		if err != nil {
-			// A broken zip left behind would count as built.
-			_ = os.Remove(os.Args[1])
-		}
-	}
-
+	err := run(os.Args[1], os.Args[2], os.Args[3:])
 	if err != nil {
 		_, _ = fmt.Fprintln(os.Stderr, "zipfiles:", err)
 
 		os.Exit(1)
 	}
+}
+
+// run writes out from files, with the entries' time given as Unix seconds.
+// On failure, out is removed: a broken zip left behind would count as
+// built.
+func run(out, unix string, files []string) error {
+	sec, err := strconv.ParseInt(unix, 10, 64)
+	if err != nil {
+		return fmt.Errorf("time: %w", err)
+	}
+
+	modified := time.Unix(sec, 0).UTC()
+	if modified.Year() < zipEpochYear {
+		return fmt.Errorf("%w: %s", errTooEarly, modified)
+	}
+
+	err = write(out, modified, files)
+	if err != nil {
+		_ = os.Remove(out)
+	}
+
+	return err
 }
 
 func write(out string, modified time.Time, files []string) error {
@@ -50,8 +73,18 @@ func write(out string, modified time.Time, files []string) error {
 	}
 
 	archive := zip.NewWriter(f)
+	seen := map[string]bool{}
 
 	for _, name := range files {
+		base := filepath.Base(name)
+		if seen[base] {
+			_ = f.Close()
+
+			return fmt.Errorf("%w: %s", errDuplicate, base)
+		}
+
+		seen[base] = true
+
 		err = add(archive, name, modified)
 		if err != nil {
 			_ = f.Close()

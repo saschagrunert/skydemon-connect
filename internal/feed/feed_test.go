@@ -7,11 +7,13 @@ import (
 	"net/netip"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/saschagrunert/skydemon-connect/internal/feed"
 	"github.com/saschagrunert/skydemon-connect/internal/position"
 	"github.com/saschagrunert/skydemon-connect/internal/testutil"
+	"github.com/saschagrunert/skydemon-connect/internal/tray"
 )
 
 var errFailed = errors.New("SimConnect.dll not found")
@@ -45,8 +47,9 @@ func TestStatus(t *testing.T) {
 
 	f.Update(position.Sample{Lat: 51, Lon: 12, AltM: 762, GSKnots: 100, TrackTrue: 90})
 
+	// Before a second of frames, the frame rate isn't known.
 	st = f.Status()
-	if st.Kind != feed.Sending || st.String() != "30 Hz · 2500 ft · 100 kt · trk 090" {
+	if st.Kind != feed.Sending || st.String() != "2500 ft · 100 kt · trk 090" {
 		t.Errorf("sending: %+v %q", st, st.String())
 	}
 
@@ -147,4 +150,77 @@ func TestRun(t *testing.T) {
 
 	cancel()
 	<-done
+}
+
+// The failures the tray shows fit its tooltip.
+func TestFailuresFitTheTooltip(t *testing.T) {
+	t.Parallel()
+
+	for _, msg := range feed.FailureTexts() {
+		if len(msg) > tray.MaxErrLen {
+			t.Errorf("%q: %d characters, room for %d", msg, len(msg), tray.MaxErrLen)
+		}
+	}
+}
+
+// The status says how many frames a second the sim sends, and nothing
+// once none came for a second.
+func TestStatusFrameRate(t *testing.T) {
+	t.Parallel()
+
+	synctest.Test(t, func(t *testing.T) {
+		f := feed.New(feed.Outputs{}, testutil.Log(t))
+		f.SetLive(true)
+
+		lat := 51.0
+		for range 3 * 25 { // 25 fps for three seconds
+			f.Update(position.Sample{Lat: lat, Lon: 12, GSKnots: 100})
+			lat += 0.0001
+
+			time.Sleep(time.Second / 25)
+		}
+
+		st := f.Status()
+		if st.FrameRate != 25 || !strings.HasPrefix(st.String(), "25 fps · ") {
+			t.Errorf("at 25 fps: %d, %q", st.FrameRate, st.String())
+		}
+
+		time.Sleep(2 * time.Second)
+
+		if st := f.Status(); st.FrameRate != 0 {
+			t.Errorf("no frames for 2 s: %d fps", st.FrameRate)
+		}
+
+		// After the gap the rate is measured afresh: nothing until a full
+		// second of frames, not the frames before the gap over it.
+		for i := range 2 * 25 {
+			f.Update(position.Sample{Lat: lat, Lon: 12, GSKnots: 100})
+			lat += 0.0001
+
+			if st := f.Status(); i == 12 && st.FrameRate != 0 {
+				t.Errorf("half a second after a pause: %d fps", st.FrameRate)
+			}
+
+			time.Sleep(time.Second / 25)
+		}
+
+		if st := f.Status(); st.FrameRate != 25 {
+			t.Errorf("after a pause: %d fps, want 25", st.FrameRate)
+		}
+	})
+}
+
+func TestTargets(t *testing.T) {
+	t.Parallel()
+
+	f := feed.New(feed.Outputs{}, testutil.Log(t))
+	a := netip.MustParseAddrPort("192.0.2.1:49002")
+	f.SetTargets([]netip.AddrPort{a})
+
+	got := f.Targets()
+	got[0] = netip.AddrPort{}
+
+	if f.Targets()[0] != a {
+		t.Error("Targets returns the feed's own slice")
+	}
 }

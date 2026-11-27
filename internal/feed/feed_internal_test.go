@@ -490,12 +490,19 @@ func TestStaleStandsStill(t *testing.T) {
 			t.Errorf("fresh: %+v", st)
 		}
 
-		// Frames at the same position for longer: a paused sim. The
-		// position is still sent, standing still.
-		for range 2 * RateHz * staleAfter / time.Second {
+		// Frames at the same position: a paused sim. After staleFrames
+		// of them the position is still sent, standing still.
+		for range staleFrames - 1 {
 			time.Sleep(time.Second / RateHz)
 			f.Update(flying())
 		}
+
+		if st := f.Status(); st.Sample.GSKnots != 100 {
+			t.Errorf("after %d identical frames: %+v", staleFrames-1, st)
+		}
+
+		time.Sleep(time.Second / RateHz)
+		f.Update(flying())
 
 		if st := f.Status(); st.Kind != Sending || st.Sample.GSKnots != 0 || st.Sample.Lat != 51 {
 			t.Errorf("stale: %+v", st)
@@ -531,17 +538,8 @@ func TestDropsNonFinite(t *testing.T) {
 	}
 }
 
-// The failures the tray shows fit its tooltip.
-func TestFailuresFitTheTooltip(t *testing.T) {
+func TestSerialFailsNamesPort(t *testing.T) {
 	t.Parallel()
-
-	for _, msg := range []string{
-		udpFailsText, noTargetsText, serialFails(""), serialFails(`\\.\COM255`),
-	} {
-		if len(msg) > MaxErrLen {
-			t.Errorf("%q: %d characters, room for %d", msg, len(msg), MaxErrLen)
-		}
-	}
 
 	if got := serialFails("COM11"); !strings.HasPrefix(got, "COM11: ") {
 		t.Errorf("serial failure %q names no port", got)

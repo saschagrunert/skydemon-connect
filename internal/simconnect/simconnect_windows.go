@@ -21,9 +21,6 @@ const (
 	periodSimFrame  = 3
 	objectUser      = 0
 	unused          = 0xFFFFFFFF
-
-	defineID  = 1
-	requestID = 1
 )
 
 // LoadLibraryEx flags: look for the DLL's own imports next to it and in

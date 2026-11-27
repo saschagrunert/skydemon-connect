@@ -8,58 +8,88 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
 )
 
 const (
-	logName     = "SkyDemonConnect.log"
+	logStem     = "SkyDemonConnect"
+	logName     = logStem + ".log"
 	previousLog = "SkyDemonConnect.previous.log"
 	logDirMode  = 0o750
 	logFileMode = 0o640
+	// logFlags are the log's line prefix: date and time.
+	logFlags = log.Ldate | log.Ltime
 	// oldLogAge is when a per-process log is cleaned up.
 	oldLogAge = 7 * 24 * time.Hour
 )
 
 // openLog starts a fresh log in the first of dirs it can write to, keeping
-// the previous run's there as previousLog. Without any, logging is
-// discarded rather than stopping the app. It returns the logger, the log
-// file and its path, both nil and empty then.
-func openLog(dirs ...string) (*log.Logger, *os.File, string) {
-	const flags = log.Ldate | log.Ltime
-
+// the previous run's there as previousLog, and returns it; nil without
+// any, and then logging is discarded rather than stopping the app.
+func openLog(dirs ...string) *os.File {
 	for _, d := range dirs {
 		_ = os.MkdirAll(d, logDirMode)
 
-		// The previous log is moved aside. If that fails because it is
-		// open, another copy runs from this folder in another Windows
-		// session: its log is left alone, and this one gets its own.
-		path := filepath.Join(d, logName)
-		create := os.O_CREATE | os.O_WRONLY | os.O_TRUNC
-
-		err := os.Rename(path, filepath.Join(d, previousLog))
-		if err != nil && !errors.Is(err, fs.ErrNotExist) {
-			path = filepath.Join(d, fmt.Sprintf("SkyDemonConnect.%d.log", os.Getpid()))
-			create |= os.O_EXCL
-		}
-
-		f, err := os.OpenFile(path, create, logFileMode)
+		f, err := createLog(d)
 		if err == nil {
 			removeOldLogs(d, time.Now().Add(-oldLogAge))
 
-			return log.New(f, "", flags), f, path
+			return f
 		}
 	}
 
-	return log.New(io.Discard, "", flags), nil, ""
+	return nil
+}
+
+// createLog creates the log in dir. The previous log is moved aside and a
+// new one created exclusively. If either fails because another copy, e.g.
+// in another Windows session, has the log open or just created it, its log
+// is left alone and this one gets a log of its own.
+func createLog(dir string) (*os.File, error) { return createLogWith(dir, os.Rename) }
+
+// createLogWith is createLog with rename, replaced in tests.
+func createLogWith(dir string, rename func(from, to string) error) (*os.File, error) {
+	const create = os.O_CREATE | os.O_WRONLY | os.O_EXCL
+
+	path := filepath.Join(dir, logName)
+
+	err := rename(path, filepath.Join(dir, previousLog))
+	if err == nil || errors.Is(err, fs.ErrNotExist) {
+		f, err := os.OpenFile(path, create, logFileMode)
+		if !errors.Is(err, fs.ErrExist) {
+			return f, err
+		}
+	}
+
+	own := filepath.Join(dir, fmt.Sprintf("%s.%d.log", logStem, os.Getpid()))
+
+	return os.OpenFile(own, create, logFileMode)
+}
+
+// newLogger returns a logger writing to f, which openLog opened, or one
+// that discards its output when f is nil.
+func newLogger(f *os.File) *log.Logger {
+	if f == nil {
+		return log.New(io.Discard, "", logFlags)
+	}
+
+	return log.New(f, "", logFlags)
 }
 
 // removeOldLogs deletes the per-process logs in dir, which a busy log
 // leads to, that weren't written since before.
 func removeOldLogs(dir string, before time.Time) {
-	old, _ := filepath.Glob(filepath.Join(dir, "SkyDemonConnect.*.log"))
+	old, _ := filepath.Glob(filepath.Join(dir, logStem+".*.log"))
 
 	for _, p := range old {
-		if p == filepath.Join(dir, previousLog) {
+		// Only SkyDemonConnect.<pid>.log, not e.g. a log kept for a bug
+		// report under another name.
+		pid := strings.TrimSuffix(strings.TrimPrefix(filepath.Base(p), logStem+"."), ".log")
+
+		_, err := strconv.Atoi(pid)
+		if err != nil {
 			continue
 		}
 

@@ -224,3 +224,47 @@ func TestLookupIPv4(t *testing.T) {
 		t.Errorf("localhost: %v", addrs)
 	}
 }
+
+// auto broadcasts on Wi-Fi and Ethernet, not on loopback or tunnels.
+func TestBroadcastAdapter(t *testing.T) {
+	t.Parallel()
+
+	const running = net.FlagUp | net.FlagRunning
+
+	for _, tc := range []struct {
+		flags net.Flags
+		want  bool
+	}{
+		{running | net.FlagBroadcast, true},
+		{running | net.FlagBroadcast | net.FlagMulticast, true},
+		{net.FlagUp | net.FlagBroadcast, false}, // not running
+		{running, false},                        // no broadcast
+		{running | net.FlagBroadcast | net.FlagLoopback, false},
+		{running | net.FlagBroadcast | net.FlagPointToPoint, false}, // a VPN
+	} {
+		if got := broadcastAdapter(tc.flags); got != tc.want {
+			t.Errorf("broadcastAdapter(%v) = %v", tc.flags, got)
+		}
+	}
+}
+
+// A host name with only IPv6 addresses says so, not "not an IPv4 address",
+// which is about literal addresses.
+func TestResolveNoIPv4(t *testing.T) {
+	t.Parallel()
+
+	spec, err := Parse("tablet.local:5000", 49002)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	r := spec.Resolver(testutil.Log(t))
+	r.lookup = func(context.Context, string) ([]netip.Addr, error) {
+		return []netip.Addr{netip.MustParseAddr("fe80::1")}, nil
+	}
+
+	_, err = r.resolve(t.Context(), spec.hosts[0])
+	if !errors.Is(err, errNoIPv4) {
+		t.Errorf("resolve: %v", err)
+	}
+}

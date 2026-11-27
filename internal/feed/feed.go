@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net/netip"
 	"slices"
 	"sync"
@@ -17,23 +18,35 @@ import (
 	"github.com/saschagrunert/skydemon-connect/internal/nmea"
 	"github.com/saschagrunert/skydemon-connect/internal/position"
 	"github.com/saschagrunert/skydemon-connect/internal/report"
+	"github.com/saschagrunert/skydemon-connect/internal/serial"
 )
 
 // RateHz is the update rate. Real GPS receivers send 1-10 fixes a second; 30
 // matches the sim's frame rate closely enough for a smooth moving map.
 const RateHz = 30
 
-// staleAfter is how long a position may stay where it is before it is sent
-// as standing still. A paused or hung sim sends no frames, or the same
-// position again; EFBs that extrapolate between fixes would otherwise move
-// a frozen aircraft on at its last ground speed.
-const staleAfter = 2 * time.Second
+// A position that doesn't change is sent as standing still: EFBs that
+// extrapolate between fixes would otherwise move a frozen aircraft on at
+// its last ground speed. A paused sim sends the same position again, which
+// counts after staleFrames frames (half a second at 30 fps); a hung one
+// sends nothing, which counts after staleAfter. The count, not a time, is
+// used for frames, so that a sim that runs slowly isn't taken for paused.
+const (
+	staleFrames = 15
+	staleAfter  = 2 * time.Second
+)
 
 // outputSettle is how long an output must keep failing before it counts as
 // failing, logged and shown, and keep working before it counts as working
 // again: one that flaps, e.g. a send failing every other time, doesn't log
 // and pop a balloon on every flip.
 const outputSettle = 2 * time.Second
+
+// The Reporter keys of the outputs; each UDP target has its own, udpKey.
+const (
+	keyUDP    = "feed: udp"
+	keySerial = "feed: serial"
+)
 
 // What the tray says about failing UDP output; the details go to the log.
 // Each fits the tray tooltip.
@@ -73,30 +86,31 @@ type Status struct {
 	Sample position.Sample
 	Err    string
 	Kind   Kind
+	// FrameRate is how many frames a second the sim sent over the last
+	// second, 0 when not known: positions go out at RateHz regardless, so
+	// this shows how often they are new.
+	FrameRate int
 	// Connected: a session with MSFS is up, in a flight or not.
 	Connected bool
 }
 
-// TooltipTitle is the tray tooltip's first line; Status.String follows.
-const TooltipTitle = "SkyDemonConnect\n"
-
-// MaxErrLen is the room for Status.Err in the tray's tooltip: 127
-// characters, of which TooltipTitle and the "Error: " that String puts
-// first take 23. Texts meant for the user fit it.
-const MaxErrLen = 127 - len(TooltipTitle) - len(errorPrefix)
-
-// errorPrefix starts the String of a Failed Status.
-const errorPrefix = "Error: "
+// ErrorPrefix starts the String of a Failed Status.
+const ErrorPrefix = "Error: "
 
 // String is a one-line description, used for the console and the tooltip.
 func (s Status) String() string {
 	switch s.Kind {
 	case Failed:
-		return errorPrefix + s.Err
+		return ErrorPrefix + s.Err
 	case Sending:
-		return fmt.Sprintf("%d Hz · %.0f ft · %.0f kt · trk %03.0f",
-			RateHz, s.Sample.AltM/position.FeetToMeters, s.Sample.GSKnots,
+		pos := fmt.Sprintf("%.0f ft · %.0f kt · trk %03.0f",
+			s.Sample.AltM/position.FeetToMeters, s.Sample.GSKnots,
 			position.RoundAngle(s.Sample.TrackTrue, 0))
+		if s.FrameRate > 0 {
+			return fmt.Sprintf("%d fps · %s", s.FrameRate, pos)
+		}
+
+		return pos
 	case Waiting:
 	}
 
@@ -136,16 +150,19 @@ type fix struct {
 // and the UI. All methods are safe for concurrent use.
 //
 // A position is sent while the sim is live (connected and in a flight) and
-// reported one since it became live. A paused sim sends no new frames, but
-// a real GPS keeps reporting, so the last position is repeated, standing
+// has sent one since it became live. A paused sim sends no new position,
+// but a real GPS keeps reporting, so the last one is repeated, standing
 // still, until the sim is no longer live.
 type Feed struct {
 	nmea chan fix
 	errs *report.Reporter
 	out  Outputs
 	// moved is when sample last moved: a new frame at the same position
-	// doesn't make it fresh.
+	// doesn't make it fresh. same counts the frames since that did not
+	// move.
 	moved   time.Time
+	same    int
+	frames  frameRate
 	targets []netip.AddrPort
 	// err is the input's error, from SetError. udpErr and serialErr are
 	// set while every UDP send, or the serial output, fails.
@@ -183,11 +200,49 @@ func (f *Feed) Update(s position.Sample) {
 		return
 	}
 
+	now := time.Now()
+	f.frames.count(now)
+
 	if !f.have || s.Lat != f.sample.Lat || s.Lon != f.sample.Lon {
-		f.moved = time.Now()
+		f.moved, f.same = now, 0
+	} else {
+		f.same++
 	}
 
 	f.sample, f.have, f.err = s, true, ""
+}
+
+// frameRate measures how many frames a second the sim sends, over windows
+// of a second.
+type frameRate struct {
+	start, last time.Time
+	frames      int
+	perSecond   int
+}
+
+func (r *frameRate) count(now time.Time) {
+	// After a gap, e.g. a pause, measure afresh: the frames from before it
+	// over the whole gap would give a rate far too low.
+	if r.start.IsZero() || now.Sub(r.last) > time.Second {
+		r.start, r.frames, r.perSecond = now, 0, 0
+	}
+
+	if d := now.Sub(r.start); d >= time.Second {
+		r.perSecond = int(math.Round(float64(r.frames) / d.Seconds()))
+		r.start, r.frames = now, 0
+	}
+
+	r.frames++
+	r.last = now
+}
+
+// at returns the rate at now: 0 once no frame came for a second.
+func (r *frameRate) at(now time.Time) int {
+	if now.Sub(r.last) > time.Second {
+		return 0
+	}
+
+	return r.perSecond
 }
 
 // SetLive records whether the sim is connected and in a flight. Either
@@ -205,8 +260,8 @@ func (f *Feed) SetLive(live bool) {
 		// port that came back meanwhile, would otherwise show as a new
 		// problem until the next writes settle.
 		f.udpErr, f.serialErr = "", ""
-		f.errs.Forget("feed: udp")
-		f.errs.Forget("feed: serial")
+		f.errs.Forget(keyUDP)
+		f.errs.Forget(keySerial)
 
 		for _, t := range f.targets {
 			f.errs.Forget(udpKey(t))
@@ -235,6 +290,14 @@ func (f *Feed) SetError(err error) {
 	}
 }
 
+// Targets returns the UDP destinations.
+func (f *Feed) Targets() []netip.AddrPort {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	return slices.Clone(f.targets)
+}
+
 // SetTargets replaces the UDP destinations, e.g. after a network change.
 func (f *Feed) SetTargets(t []netip.AddrPort) {
 	f.mu.Lock()
@@ -255,9 +318,16 @@ func (f *Feed) Status() Status {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	st := f.stateLocked(time.Now())
+	now := time.Now()
+	st := f.stateLocked(now)
 
-	return Status{Sample: st.sample, Err: st.why, Kind: st.kind, Connected: f.connected}
+	return Status{
+		Sample:    st.sample,
+		Err:       st.why,
+		Kind:      st.kind,
+		FrameRate: f.frames.at(now),
+		Connected: f.connected,
+	}
 }
 
 // Run sends until ctx is done, and returns once nothing writes to the
@@ -304,7 +374,7 @@ type state struct {
 // are also sent while an output fails, so that it is retried.
 func (f *Feed) stateLocked(now time.Time) state {
 	st := state{sample: f.sample, kind: Sending, send: f.err == "" && f.have && f.live}
-	if now.Sub(f.moved) > staleAfter {
+	if f.same >= staleFrames || now.Sub(f.moved) > staleAfter {
 		st.sample.GSKnots = 0
 	}
 
@@ -322,6 +392,9 @@ func (f *Feed) stateLocked(now time.Time) state {
 	return st
 }
 
+// send sends s to every output. NMEA goes out at the full rate too, not
+// the 1-10 Hz of GPS receivers: a smooth map is the point, and a slow port
+// limits itself, since only the newest fix waits for it.
 func (f *Feed) send(s position.Sample, now time.Time) {
 	if f.out.UDP != nil {
 		f.sendUDP(s)
@@ -333,7 +406,7 @@ func (f *Feed) send(s position.Sample, now time.Time) {
 }
 
 // udpKey is the Reporter key of the sends to t.
-func udpKey(t netip.AddrPort) string { return "feed: udp " + t.String() }
+func udpKey(t netip.AddrPort) string { return keyUDP + " " + t.String() }
 
 // sendUDP sends s to every target. UDP fails while every target does, or
 // while there is none and no serial output either.
@@ -366,13 +439,13 @@ func (f *Feed) sendUDP(s position.Sample) {
 // serial output either. Each target's errors are logged by sendUDP.
 func (f *Feed) udpDone(dests []netip.AddrPort) {
 	if len(dests) == 0 && f.out.Serial == nil {
-		f.errs.Report("feed: udp", errNoTargets)
-		f.setOutputErr(&f.udpErr, failingText(f.errs.Failing("feed: udp"), noTargetsText))
+		f.errs.Report(keyUDP, errNoTargets)
+		f.setOutputErr(&f.udpErr, failingText(f.errs.Failing(keyUDP), noTargetsText))
 
 		return
 	}
 
-	f.errs.Report("feed: udp", nil)
+	f.errs.Report(keyUDP, nil)
 
 	allFailing := len(dests) > 0 && !slices.ContainsFunc(dests, func(t netip.AddrPort) bool {
 		return !f.errs.Failing(udpKey(t))
@@ -417,13 +490,13 @@ func (f *Feed) runSerial(ctx context.Context) {
 			return
 		case x := <-f.nmea:
 			n, err := io.WriteString(f.out.Serial, nmea.Sentences(x.sample, x.at))
-			if errors.Is(err, io.ErrShortWrite) && n > 0 {
-				err = nil // a slow port, or one nobody reads, still works
+			if serial.Working(n, err) {
+				err = nil
 			}
 
-			f.errs.Report("feed: serial", err)
+			f.errs.Report(keySerial, err)
 			f.setOutputErr(&f.serialErr,
-				failingText(f.errs.Failing("feed: serial"), serialFails(f.out.SerialName)))
+				failingText(f.errs.Failing(keySerial), serialFails(f.out.SerialName)))
 		}
 	}
 }

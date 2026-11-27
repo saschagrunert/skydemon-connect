@@ -1,6 +1,6 @@
 //go:build windows
 
-package tray
+package win
 
 import (
 	"errors"
@@ -8,8 +8,13 @@ import (
 	"unsafe"
 )
 
-// mutexName is the single-instance mutex, per Windows session.
-const mutexName = `Local\SkyDemonConnect`
+const (
+	// mutexName is the single-instance mutex, per Windows session.
+	mutexName = `Local\SkyDemonConnect`
+
+	errAccessDenied  = 5
+	errAlreadyExists = 183
+)
 
 // AlreadyRunning creates the single-instance mutex and reports whether
 // another instance holds it. The mutex lives as long as the process.

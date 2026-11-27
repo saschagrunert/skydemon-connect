@@ -42,7 +42,7 @@ func NewSettled(l *log.Logger, settle time.Duration) *Reporter {
 	return &Reporter{log: l, keys: map[string]*activity{}, settle: settle}
 }
 
-// Forget drops what's state, e.g. when what is no longer tried, or is
+// Forget drops the state of what, e.g. when it is no longer tried, or is
 // judged afresh. A logged failure it drops is logged as "what: reset", so
 // that the log doesn't end with an error that is no longer known.
 func (r *Reporter) Forget(what string) {

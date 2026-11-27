@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-func TestWriteTimeouts(t *testing.T) {
+func TestWriteMultiplier(t *testing.T) {
 	t.Parallel()
 
 	for _, tc := range []struct {
@@ -25,17 +25,14 @@ func TestWriteTimeouts(t *testing.T) {
 		{1, 10000},
 		{math.MaxUint32, 1},
 	} {
-		perByte, constant := writeTimeouts(tc.baud)
-		if perByte != tc.want || constant != writeSlackMS {
-			t.Errorf("%d baud: %d ms/byte + %d, want %d + %d",
-				tc.baud, perByte, constant, tc.want, writeSlackMS)
+		if perByte := writeMultiplier(tc.baud); perByte != tc.want {
+			t.Errorf("%d baud: %d ms/byte, want %d", tc.baud, perByte, tc.want)
 		}
 	}
 
 	// A full NMEA fix (about 206 bytes) at 9600 baud takes about 215 ms
 	// on the wire: the timeout must cover it.
-	perByte, constant := writeTimeouts(9600)
-	if total := 206*perByte + constant; total < 215 {
+	if total := 206*writeMultiplier(9600) + writeSlackMS; total < 215 {
 		t.Errorf("timeout %d ms is shorter than the write", total)
 	}
 }
@@ -466,5 +463,24 @@ func TestIdleCloserClosesWhenIdle(t *testing.T) {
 	err := c.Close()
 	if err != nil || !p.closed {
 		t.Errorf("close: %v, closed %v", err, p.closed)
+	}
+}
+
+func TestWorking(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		err  error
+		n    int
+		want bool
+	}{
+		{nil, 0, true},
+		{io.ErrShortWrite, 3, true}, // slow, or nobody reads
+		{io.ErrShortWrite, 0, false},
+		{errGone, 3, false},
+	} {
+		if got := Working(tc.n, tc.err); got != tc.want {
+			t.Errorf("Working(%d, %v) = %v", tc.n, tc.err, got)
+		}
 	}
 }

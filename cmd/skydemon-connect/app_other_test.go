@@ -23,8 +23,8 @@ func TestOpenOutputsSerialFile(t *testing.T) {
 	}
 	defer outs.shutdown(&sync.WaitGroup{}, testutil.Log(t))
 
-	if outs.Serial == nil || outs.UDP == nil {
-		t.Errorf("serial %v, udp %v", outs.Serial, outs.UDP)
+	if outs.port == nil || outs.conn == nil {
+		t.Errorf("serial %v, udp %v", outs.port, outs.conn)
 	}
 }
 
@@ -41,7 +41,7 @@ func TestOpenOutputsSerialOnly(t *testing.T) {
 	}
 	defer outs.shutdown(&sync.WaitGroup{}, testutil.Log(t))
 
-	if outs.Serial == nil || outs.UDP != nil {
-		t.Errorf("serial %v, udp %v", outs.Serial, outs.UDP)
+	if outs.port == nil || outs.conn != nil {
+		t.Errorf("serial %v, udp %v", outs.port, outs.conn)
 	}
 }

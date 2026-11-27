@@ -18,6 +18,8 @@ const (
 )
 
 func main() {
+	prepare()
+
 	c, usage, err := parseFlags(os.Args[1:])
 
 	switch {

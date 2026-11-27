@@ -3,13 +3,11 @@
 package tray
 
 import (
-	"fmt"
 	"image"
 	"log"
 	"os"
 	"path/filepath"
 	"slices"
-	"strings"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -59,20 +57,6 @@ func TestCopyUTF16(t *testing.T) {
 	}
 }
 
-func TestAlreadyRunning(t *testing.T) {
-	t.Parallel()
-
-	name := fmt.Sprintf(`Local\SkyDemonConnectTest%d`, os.Getpid())
-
-	if alreadyRunning(name) {
-		t.Fatal("first call: already running")
-	}
-
-	if !alreadyRunning(name) {
-		t.Error("second call: not running")
-	}
-}
-
 // Every Win32 procedure exists: NewProc only looks a name up on the first
 // call, which a typo would turn into a panic on a user's PC.
 func TestProcsExist(t *testing.T) {
@@ -82,12 +66,12 @@ func TestProcsExist(t *testing.T) {
 		procRegisterClassExW, procCreateWindowExW, procDefWindowProcW, procGetMessageW,
 		procTranslateMessage, procDispatchMessageW, procPostQuitMessage, procPostMessageW,
 		procCreatePopupMenu, procAppendMenuW, procTrackPopupMenu, procDestroyMenu,
-		procSetForegroundWindow, procGetCursorPos, procSetTimer, procMessageBoxW,
-		procCreateIconIndirect, procGetSystemMetrics, procRegisterWindowMessageW,
-		procGetDpiForWindow, procGetSystemMetricsForDpi, procDestroyIcon,
-		procShellNotifyIconW, procShellExecuteW, procCreateDIBSection,
+		procSetForegroundWindow, procGetCursorPos, procSetTimer, procKillTimer,
+		procDestroyWindow, procCreateIconIndirect, procGetSystemMetrics,
+		procRegisterWindowMessageW, procGetDpiForWindow, procGetSystemMetricsForDpi,
+		procDestroyIcon, procShellNotifyIconW, procShellExecuteW, procCreateDIBSection,
 		procCreateBitmap, procDeleteObject, procChangeWindowMsgFilter, procGetModuleHandleW,
-		procCreateMutexW, procAllocConsole, procCoInitializeEx,
+		procCoInitializeEx, procCoUninitialize,
 	} {
 		err := p.Find()
 		if err != nil {
@@ -110,17 +94,12 @@ func TestMakeIcon(t *testing.T) {
 	}
 }
 
-// The feed's errors that are meant for the user fit the tooltip after its
-// title.
-func TestTooltipBudget(t *testing.T) {
+// The tooltip's room is NOTIFYICONDATAW's Tip, less its NUL.
+func TestTooltipRoom(t *testing.T) {
 	t.Parallel()
 
-	room := len(notifyIconData{}.Tip) - 1 // the NUL
-
-	st := feed.Status{Kind: feed.Failed, Err: strings.Repeat("x", feed.MaxErrLen)}
-	if n := len(feed.TooltipTitle + st.String()); n != room {
-		t.Errorf("a %d-character error makes a %d-character tooltip, room for %d",
-			feed.MaxErrLen, n, room)
+	if room := len(notifyIconData{}.Tip) - 1; room != tooltipRoom {
+		t.Errorf("Tip holds %d characters, tooltipRoom is %d", room, tooltipRoom)
 	}
 }
 
@@ -132,7 +111,7 @@ func TestToggleMSFS(t *testing.T) {
 	clicked := &tray{
 		opts: Options{
 			ExePath:  `C:\Tools\SkyDemonConnect\SkyDemonConnect.exe`,
-			MSFS:     installs,
+			msfs:     installs,
 			AutoArgs: []string{"-udp=auto,192.168.1.23:49002", "-name=My Sim"},
 			Log:      testutil.Log(t),
 		},
@@ -160,6 +139,38 @@ func TestToggleMSFS(t *testing.T) {
 
 	if got := installs.State(moved.opts.ExePath, moved.opts.AutoArgs); got != exexml.Ours {
 		t.Errorf("after replacing: %v", got)
+	}
+}
+
+// Open log without a log, which the menu greys out, still only tells why.
+func TestCommandOpenLogWithoutLog(t *testing.T) {
+	t.Parallel()
+
+	var shown []string
+
+	clicked := &tray{
+		opts:      Options{Log: testutil.Log(t)},
+		showError: func(text string) { shown = append(shown, text) },
+	}
+
+	clicked.command(idLog)
+	clicked.command(0) // a closed menu: nothing
+
+	if !slices.Equal(shown, []string{noLogText}) {
+		t.Errorf("shown %q", shown)
+	}
+}
+
+// While a box the tray owns is open, tray clicks are ignored: the menu
+// can't run a second command meanwhile. (Without the box, a click would
+// open the menu, which needs a desktop.)
+func TestTrayClickWhileModal(t *testing.T) {
+	t.Parallel()
+
+	clicked := &tray{opts: Options{Log: testutil.Log(t)}, modal: true}
+
+	if r := clicked.wndProc(0, wmTray, 0, wmLButtonUp); r != 0 {
+		t.Errorf("wndProc: %d", r)
 	}
 }
 
