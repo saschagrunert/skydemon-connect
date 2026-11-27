@@ -1,5 +1,12 @@
-# Test helpers and build tools, not the app.
+# Linux and Windows upload separately: statuses and comments wait for
+# both, so that they aren't computed from one OS first.
+codecov:
+  notify:
+    after_n_builds: 2
+comment:
+  after_n_builds: 2
+
+# Test helpers and a build tool, not the app.
 ignore:
   - internal/testutil
   - internal/icon/genpng
-  - internal/zipfiles

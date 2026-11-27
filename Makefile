@@ -13,6 +13,8 @@ GOLANGCI_LINT_SHA256_linux_amd64 = 9b7fe6a6bf6334b98decf8d86b11415ea7889afdabdd1
 GOLANGCI_LINT_SHA256_linux_arm64 = b4d8f17068b35ee6060cc2f69a16fb48740d706fbba81661c318649c114a6998
 GOLANGCI_LINT_SHA256_darwin_amd64 = 767b899a28285e88ded2823d5dcc4bc5ef681173eb2d80f029a7b17ee4ece3b8
 GOLANGCI_LINT_SHA256_darwin_arm64 = d1e409481a8ca846c4bc97e781eb5cb1bd5c23353a0b3977a1cbda1b1b6447d5
+GOLANGCI_LINT_SHA256_windows_amd64 = cd7ea6063c95de245e17e5246e42bdc14bb221792c429dbd239ab3a6ade6ca6a
+GOLANGCI_LINT_SHA256_windows_arm64 = 4fb8988abf186158e30af1b8a0fb3671cf2cb02bc91d7e6ce6996f4c1e922e9a
 
 BUILD_DIR := build
 BINARY := $(BUILD_DIR)/SkyDemonConnect.exe
@@ -46,13 +48,20 @@ HOST_ARCH := $(shell $(GO) env GOHOSTARCH)
 # The build's own tools run here, also when GOOS=windows is exported.
 HOST_GO := GOOS=$(HOST_OS) GOARCH=$(HOST_ARCH) $(GO)
 
+# Executables on a Windows host need .exe, and golangci-lint ships as a zip
+# there.
+EXE := $(if $(filter windows,$(HOST_OS)),.exe)
+LINT_ARCHIVE := $(if $(filter windows,$(HOST_OS)),zip,tar.gz)
+# unpack extracts file $(2) from archive $(1) into $(BUILD_DIR).
+unpack = $(if $(filter windows,$(HOST_OS)),unzip -q -o -j $(1) $(2) -d $(BUILD_DIR),tar -xzf $(1) -C $(BUILD_DIR) --strip-components=1 $(2))
+
 # The code is mostly Windows-only (SimConnect, Win32 tray, COM ports), so
 # it is linted for both: the host run never loads *_windows.go files.
 LINT_OSES = $(sort $(HOST_OS) windows)
 
 # A GOLANGCI_LINT given from outside, e.g. GOLANGCI_LINT=golangci-lint for
 # one on the PATH, is used as it is; the default is downloaded.
-GOLANGCI_LINT ?= $(BUILD_DIR)/golangci-lint-$(GOLANGCI_LINT_VERSION)
+GOLANGCI_LINT ?= $(BUILD_DIR)/golangci-lint-$(GOLANGCI_LINT_VERSION)$(EXE)
 
 COLOR := \033[36m
 NOCOLOR := \033[0m
@@ -100,26 +109,29 @@ build: $(BINARY) ## Build build/SkyDemonConnect.exe (Windows, GUI subsystem)
 $(BINARY): $(SYSO)
 	@mkdir -p $(BUILD_DIR)
 	GOOS=windows GOARCH=amd64 CGO_ENABLED=0 $(GO) build -trimpath -ldflags "$(LDFLAGS)" -o $(BINARY) ./cmd/skydemon-connect
+	@# Left in the source tree, the resource would go into every later
+	@# Windows go build or go test, with this build's version.
+	rm -f $(SYSO)
 
 .PHONY: $(SYSO)
-$(SYSO): $(BUILD_DIR)/go-winres
+$(SYSO): $(BUILD_DIR)/go-winres$(EXE)
 	$(HOST_GO) run ./internal/icon/genpng $(BUILD_DIR)/icon.png
-	$(BUILD_DIR)/go-winres simply --arch amd64 --manifest gui --icon $(BUILD_DIR)/icon.png \
+	$(BUILD_DIR)/go-winres$(EXE) simply --arch amd64 --manifest gui --icon $(BUILD_DIR)/icon.png \
 		--product-name SkyDemonConnect --file-description SkyDemonConnect \
 		--original-filename SkyDemonConnect.exe --copyright "The SkyDemonConnect Authors" \
 		--product-version "$(VERSION)" --file-version $(FILE_VERSION) \
 		--out cmd/skydemon-connect/rsrc
 
-$(BUILD_DIR)/go-winres: tools/go.mod tools/go.sum
+$(BUILD_DIR)/go-winres$(EXE): tools/go.mod tools/go.sum
 	@mkdir -p $(BUILD_DIR)
-	cd tools && $(HOST_GO) build -o ../$(BUILD_DIR)/go-winres github.com/tc-hib/go-winres
+	cd tools && $(HOST_GO) build -o ../$(BUILD_DIR)/go-winres$(EXE) github.com/tc-hib/go-winres
 
 .PHONY: bundle
 bundle: $(BUNDLE) ## Zip the exe with SimConnect.dll from the MSFS SDK (needs msiextract)
 
 # The entries get the commit's time, so the same commit gives the same zip.
 $(BUNDLE): $(BINARY) $(SDK_DIR)/SimConnect.dll LICENSE NOTICE.md
-	$(HOST_GO) run ./internal/zipfiles $@ "$$(git log -1 --format=%ct 2>/dev/null || echo 0)" \
+	$(HOST_GO) run ./internal/zipfiles $@ "$$(git log -1 --format=%ct)" \
 		$(BINARY) $(SDK_DIR)/SimConnect.dll "$(SDK_DIR)/MSFS SDK EULA.pdf" LICENSE NOTICE.md
 
 # The SDK installer is an MSI with external cabinets; msiextract unpacks
@@ -144,7 +156,9 @@ $(SDK_DIR)/SimConnect.dll:
 .PHONY: verify-version
 # A host build with the same -X: go version -m can't check the exe itself,
 # since -trimpath leaves -ldflags out of its build info.
-verify-version: ## Verify that -ldflags still sets the version
+# On Windows -version shows a message box, so this runs elsewhere only.
+verify-version: ## Verify that -ldflags still sets the version (not on Windows)
+	@[ "$(HOST_OS)" != windows ] || { echo "ERROR: verify-version needs a non-Windows host" >&2; exit 1; }
 	$(HOST_GO) run -ldflags "-X main.version=verify" ./cmd/skydemon-connect -version | \
 		grep -qx 'SkyDemonConnect verify'
 
@@ -152,6 +166,7 @@ verify-version: ## Verify that -ldflags still sets the version
 RACE ?= -race
 
 .PHONY: test
+# ci.yml runs this command itself, as Windows has no make: keep both alike.
 test: ## Run the tests with the race detector and coverage
 	@mkdir -p $(BUILD_DIR)
 	$(GO) test $(RACE) -count=1 -coverprofile=$(BUILD_DIR)/coverage.out -covermode=atomic ./...
@@ -167,32 +182,33 @@ lint: $(filter $(BUILD_DIR)/%,$(GOLANGCI_LINT)) ## Run golangci-lint for the hos
 		GOOS=$$goos $(GOLANGCI_LINT) run ./...; \
 	done
 
-$(BUILD_DIR)/golangci-lint-$(GOLANGCI_LINT_VERSION):
+# Windows releases are zips: unzip unpacks them, as Git Bash's or MSYS2's
+# tar (GNU) can't.
+$(BUILD_DIR)/golangci-lint-$(GOLANGCI_LINT_VERSION)$(EXE):
 	@mkdir -p $(BUILD_DIR)
-	curl -sSfL -o $(BUILD_DIR)/golangci-lint.tar.gz \
-		https://github.com/golangci/golangci-lint/releases/download/v$(GOLANGCI_LINT_VERSION)/golangci-lint-$(GOLANGCI_LINT_VERSION)-$(HOST_OS)-$(HOST_ARCH).tar.gz
-	$(call verify_checksum,$(BUILD_DIR)/golangci-lint.tar.gz,GOLANGCI_LINT)
-	tar xzf $(BUILD_DIR)/golangci-lint.tar.gz -C $(BUILD_DIR) --strip-components=1 \
-		golangci-lint-$(GOLANGCI_LINT_VERSION)-$(HOST_OS)-$(HOST_ARCH)/golangci-lint
-	mv $(BUILD_DIR)/golangci-lint $@
-	rm $(BUILD_DIR)/golangci-lint.tar.gz
+	curl -sSfL -o $(BUILD_DIR)/golangci-lint.$(LINT_ARCHIVE) \
+		https://github.com/golangci/golangci-lint/releases/download/v$(GOLANGCI_LINT_VERSION)/golangci-lint-$(GOLANGCI_LINT_VERSION)-$(HOST_OS)-$(HOST_ARCH).$(LINT_ARCHIVE)
+	$(call verify_checksum,$(BUILD_DIR)/golangci-lint.$(LINT_ARCHIVE),GOLANGCI_LINT)
+	$(call unpack,$(BUILD_DIR)/golangci-lint.$(LINT_ARCHIVE),golangci-lint-$(GOLANGCI_LINT_VERSION)-$(HOST_OS)-$(HOST_ARCH)/golangci-lint$(EXE))
+	mv $(BUILD_DIR)/golangci-lint$(EXE) $@
+	rm $(BUILD_DIR)/golangci-lint.$(LINT_ARCHIVE)
 
 .PHONY: govulncheck
-govulncheck: $(BUILD_DIR)/govulncheck $(BUILD_DIR)/go-winres ## Check the release build and its tools for known vulnerabilities
-	GOOS=windows $(BUILD_DIR)/govulncheck ./...
-	$(BUILD_DIR)/govulncheck -mode=binary $(BUILD_DIR)/go-winres
+govulncheck: $(BUILD_DIR)/govulncheck$(EXE) $(BUILD_DIR)/go-winres$(EXE) ## Check the release build and its tools for known vulnerabilities
+	GOOS=windows $(BUILD_DIR)/govulncheck$(EXE) ./...
+	$(BUILD_DIR)/govulncheck$(EXE) -mode=binary $(BUILD_DIR)/go-winres$(EXE)
 
 # Built for the host: go tool would build it for GOOS=windows.
-$(BUILD_DIR)/govulncheck: tools/go.mod tools/go.sum
+$(BUILD_DIR)/govulncheck$(EXE): tools/go.mod tools/go.sum
 	@mkdir -p $(BUILD_DIR)
-	cd tools && $(HOST_GO) build -o ../$(BUILD_DIR)/govulncheck golang.org/x/vuln/cmd/govulncheck
+	cd tools && $(HOST_GO) build -o ../$(BUILD_DIR)/govulncheck$(EXE) golang.org/x/vuln/cmd/govulncheck
 
 .PHONY: verify-tidy
 verify-tidy: ## Verify go.mod and tools/go.mod are tidy and pin the same Go
 	$(GO) mod tidy -diff
 	cd tools && $(GO) mod tidy -diff
-	@[ "$$(grep '^toolchain ' go.mod)" = "$$(grep '^toolchain ' tools/go.mod)" ] || \
-		{ echo "ERROR: go.mod and tools/go.mod pin different toolchains" >&2; exit 1; }
+	@[ "$$(grep -E '^(go|toolchain) ' go.mod)" = "$$(grep -E '^(go|toolchain) ' tools/go.mod)" ] || \
+		{ echo "ERROR: go.mod and tools/go.mod pin different Go versions" >&2; exit 1; }
 
 .PHONY: clean
 clean: ## Remove build output

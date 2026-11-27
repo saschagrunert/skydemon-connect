@@ -34,7 +34,8 @@ var (
 	procSetForegroundWindow    = user32.NewProc("SetForegroundWindow")
 	procGetCursorPos           = user32.NewProc("GetCursorPos")
 	procSetTimer               = user32.NewProc("SetTimer")
-	procMessageBoxW            = user32.NewProc("MessageBoxW")
+	procKillTimer              = user32.NewProc("KillTimer")
+	procDestroyWindow          = user32.NewProc("DestroyWindow")
 	procCreateIconIndirect     = user32.NewProc("CreateIconIndirect")
 	procGetSystemMetrics       = user32.NewProc("GetSystemMetrics")
 	procRegisterWindowMessageW = user32.NewProc("RegisterWindowMessageW")
@@ -48,9 +49,8 @@ var (
 	procDeleteObject           = gdi32.NewProc("DeleteObject")
 	procChangeWindowMsgFilter  = user32.NewProc("ChangeWindowMessageFilterEx")
 	procGetModuleHandleW       = kernel32.NewProc("GetModuleHandleW")
-	procCreateMutexW           = kernel32.NewProc("CreateMutexW")
-	procAllocConsole           = kernel32.NewProc("AllocConsole")
 	procCoInitializeEx         = ole32.NewProc("CoInitializeEx")
+	procCoUninitialize         = ole32.NewProc("CoUninitialize")
 )
 
 const (
@@ -58,8 +58,10 @@ const (
 	wmClose           = 0x0010
 	wmQueryEndSession = 0x0011
 	wmEndSession      = 0x0016
-	wmContextMenu     = 0x007B
+	wmSettingChange   = 0x001A
+	wmDisplayChange   = 0x007E
 	wmTimer           = 0x0113
+	wmDpiChanged      = 0x02E0
 	wmLButtonUp       = 0x0202
 	wmRButtonUp       = 0x0205
 	wmApp             = 0x8000
@@ -86,19 +88,12 @@ const (
 	tpmNoNotify    = 0x0080
 	tpmReturnCmd   = 0x0100
 
-	mbIconError     = 0x10
-	mbIconInfo      = 0x40
-	mbSetForeground = 0x10000
-	mbTopmost       = 0x40000
-
 	// COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE, as ShellExecute
 	// wants it.
 	coinitShell = 0x2 | 0x4
 
 	smCxSmIcon       = 49
 	swShowNormal     = 1
-	errAccessDenied  = 5
-	errAlreadyExists = 183
 	msgfltAllow      = 1
 	highSurrogateMin = 0xD800
 	lowSurrogateMin  = 0xDC00

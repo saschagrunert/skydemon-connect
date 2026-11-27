@@ -30,6 +30,7 @@ var (
 	errBadHost  = errors.New("not an IPv4 address or a host name")
 	errNoPort   = errors.New("port must be 1-65535")
 	errNotIPv4  = errors.New("not an IPv4 address")
+	errNoIPv4   = errors.New("has no IPv4 address")
 )
 
 // lookupTimeout bounds one host name lookup, so that a slow DNS server
@@ -140,8 +141,8 @@ func (r *Resolver) Known() List {
 // not logged: that is a shutdown, not a failure.
 func (r *Resolver) Resolve(ctx context.Context) List {
 	s := r.spec
+	// An invalid (zero) address stands for a name that didn't resolve.
 	found := make([]netip.AddrPort, len(s.hosts))
-	ok := make([]bool, len(s.hosts))
 
 	var wg sync.WaitGroup
 
@@ -152,7 +153,7 @@ func (r *Resolver) Resolve(ctx context.Context) List {
 				r.errs.Report("targets: "+h.String(), err)
 			}
 
-			found[i], ok[i] = a, err == nil
+			found[i] = a
 		})
 	}
 
@@ -160,8 +161,8 @@ func (r *Resolver) Resolve(ctx context.Context) List {
 
 	out := slices.Clone(s.fixed)
 
-	for i, a := range found {
-		if ok[i] {
+	for _, a := range found {
+		if a.IsValid() {
 			out = append(out, a)
 		}
 	}
@@ -204,9 +205,9 @@ func dedupe(l List) List {
 }
 
 // localBroadcasts returns the subnet broadcast address of every active
-// IPv4 network. Subnet broadcasts are used instead of 255.255.255.255,
-// which Windows sends out of one adapter only: with VPN or Hyper-V
-// adapters, often not the Wi-Fi.
+// IPv4 network on a broadcast adapter, see broadcastAdapter. Subnet
+// broadcasts are used instead of 255.255.255.255, which Windows sends out
+// of one adapter only: with VPN or Hyper-V adapters, often not the Wi-Fi.
 func localBroadcasts() ([]netip.Addr, error) {
 	ifaces, err := net.Interfaces()
 	if err != nil {
@@ -216,8 +217,7 @@ func localBroadcasts() ([]netip.Addr, error) {
 	var addrs []net.Addr
 
 	for i := range ifaces {
-		const want = net.FlagUp | net.FlagRunning | net.FlagBroadcast
-		if ifaces[i].Flags&want != want || ifaces[i].Flags&net.FlagLoopback != 0 {
+		if !broadcastAdapter(ifaces[i].Flags) {
 			continue
 		}
 
@@ -228,6 +228,16 @@ func localBroadcasts() ([]netip.Addr, error) {
 	}
 
 	return broadcasts(addrs), nil
+}
+
+// broadcastAdapter reports whether an adapter's networks get auto's
+// broadcasts: one that is up, running and can broadcast, and not loopback
+// or a point-to-point link, as VPN and other tunnels are, which would send
+// the position into a company or provider network.
+func broadcastAdapter(flags net.Flags) bool {
+	const want = net.FlagUp | net.FlagRunning | net.FlagBroadcast
+
+	return flags&want == want && flags&(net.FlagLoopback|net.FlagPointToPoint) == 0
 }
 
 // broadcasts returns the directed broadcast addresses of the IPv4 networks
@@ -282,7 +292,7 @@ func ipv4Prefix(a net.Addr) (netip.Prefix, bool) {
 }
 
 // Describe explains a spec for the log, e.g. "auto (this PC + local
-// networks) on port 49002".
+// networks, port 49002)".
 func (s *Spec) Describe() string {
 	parts := make([]string, 0, len(s.fixed)+len(s.hosts)+1)
 	if s.auto {
@@ -392,5 +402,5 @@ func (r *Resolver) resolve(ctx context.Context, h hostPort) (netip.AddrPort, err
 		}
 	}
 
-	return netip.AddrPort{}, errNotIPv4
+	return netip.AddrPort{}, errNoIPv4
 }

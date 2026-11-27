@@ -58,7 +58,7 @@ func TestRunConsole(t *testing.T) {
 		}
 
 		if got := out.String(); !strings.Contains(got, "demo: circling") ||
-			!strings.Contains(got, "\r30 Hz · ") {
+			!strings.Contains(got, " kt · trk ") {
 			t.Errorf("output %q", got)
 		}
 	})

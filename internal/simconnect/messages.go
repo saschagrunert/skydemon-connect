@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"log"
 	"strconv"
+	"time"
 )
 
 // Message layout from SimConnect.h. The structures are packed.
@@ -26,10 +27,29 @@ const (
 	eventDataOffset = 20
 	eventMinSize    = 24
 	// In SIMCONNECT_RECV_SIMOBJECT_DATA the header and 7 DWORDs precede
-	// the data block; the last of them is dwDefineCount.
+	// the data block: dwRequestID, dwObjectID, dwDefineID, ... and last
+	// dwDefineCount.
+	requestIDOffset   = 12
+	defineIDOffset    = 20
 	defineCountOffset = 36
 	dataOffset        = 40
 )
+
+// The IDs of the one data definition and request.
+const (
+	defineID  = 1
+	requestID = 1
+)
+
+// simGrace is how long after OPEN the Sim event is waited for before the
+// session counts as live without it. MSFS may send it only after OPEN,
+// and until then the position could be a menu's or the last flight's.
+const simGrace = 500 * time.Millisecond
+
+// exceptionKey identifies an exception: the code, and the argument the sim
+// rejected. Not the send ID: that is new for each packet, so a probe that
+// fails on every try would be logged every time.
+type exceptionKey struct{ code, index uint32 }
 
 // eventSim is the client event ID of the "Sim" system event: whether a
 // flight is running (dwData 1) or not, sent on every change and once right
@@ -41,9 +61,15 @@ const eventSim = 1
 type dispatcher struct {
 	log *log.Logger
 	h   Handlers
-	// exceptions holds the exception codes logged so far: one the sim
-	// repeats, e.g. on every probe, is logged once.
-	exceptions map[uint32]bool
+	// exceptions holds the exceptions logged so far: one the sim repeats,
+	// e.g. on every probe, is logged once.
+	exceptions map[exceptionKey]bool
+	// liveAt is when the session counts as live without a Sim event: the
+	// end of simGrace after OPEN. It is zero once one came, or before
+	// OPEN.
+	liveAt time.Time
+	// simKnown is set once a Sim event came.
+	simKnown bool
 	// connected is set by OPEN: the sim answered.
 	connected bool
 	// stopped is set while the Sim event reports no flight running: the
@@ -68,7 +94,10 @@ func (d *dispatcher) handle(buf []byte) bool {
 		d.log.Printf("simconnect: connected")
 		d.h.Connected(true)
 
-		if !d.stopped {
+		switch {
+		case !d.simKnown:
+			d.liveAt = time.Now().Add(simGrace)
+		case !d.stopped:
 			d.h.Live(true)
 		}
 	case recvQuit:
@@ -94,6 +123,13 @@ func (d *dispatcher) data(buf []byte) {
 	var v [numVars]float64
 
 	const want = dataOffset + numVars*8
+
+	// Data for another request or definition isn't this one's layout.
+	if len(buf) >= dataOffset &&
+		(binary.LittleEndian.Uint32(buf[requestIDOffset:]) != requestID ||
+			binary.LittleEndian.Uint32(buf[defineIDOffset:]) != defineID) {
+		return
+	}
 
 	if len(buf) >= want {
 		_, err := binary.Decode(buf[dataOffset:], binary.LittleEndian, &v)
@@ -124,10 +160,23 @@ func (d *dispatcher) event(buf []byte) {
 	}
 }
 
+// tick makes the session live once simGrace passed after OPEN without a
+// Sim event: a sim that doesn't send one would otherwise never be.
+func (d *dispatcher) tick(now time.Time) {
+	if d.liveAt.IsZero() || now.Before(d.liveAt) {
+		return
+	}
+
+	d.liveAt = time.Time{}
+
+	d.log.Printf("simconnect: no Sim event, taking a flight as running")
+	d.h.Live(true)
+}
+
 // sim turns the Sim event into Live, so that the feed stops in the
 // simulator's menus and starts again with the next flight.
 func (d *dispatcher) sim(running bool) {
-	d.stopped = !running
+	d.stopped, d.simKnown, d.liveAt = !running, true, time.Time{}
 	if !d.connected {
 		return
 	}
@@ -141,23 +190,28 @@ func (d *dispatcher) sim(running bool) {
 	d.h.Live(running)
 }
 
-// exception logs a SIMCONNECT_RECV_EXCEPTION the first time its code
-// comes up in the session.
+// exception logs a SIMCONNECT_RECV_EXCEPTION the first time its code comes
+// up for its argument in the session.
 func (d *dispatcher) exception(buf []byte) {
 	if len(buf) < exceptionMinSize {
 		return
 	}
 
-	code := binary.LittleEndian.Uint32(buf[recvHeaderSize:])
-	if d.exceptions[code] {
+	key := exceptionKey{code: binary.LittleEndian.Uint32(buf[recvHeaderSize:])}
+	if len(buf) >= exceptionFullSize {
+		key.index = binary.LittleEndian.Uint32(buf[indexOffset:])
+	}
+
+	if d.exceptions[key] {
 		return
 	}
 
 	if d.exceptions == nil {
-		d.exceptions = map[uint32]bool{}
+		d.exceptions = map[exceptionKey]bool{}
 	}
 
-	d.exceptions[code] = true
+	d.exceptions[key] = true
+	code := key.code
 
 	// dwSendID and dwIndex tell which call, and which of its arguments,
 	// the sim rejected.

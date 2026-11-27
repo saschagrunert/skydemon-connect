@@ -204,7 +204,9 @@ func TestLoopQuit(t *testing.T) {
 	t.Parallel()
 
 	data := goldenData(t)
-	got, n, _ := runLoop(t, &fakeConn{msgs: [][]byte{msgOpen(), data, data, msgQuit()}})
+	got, n, _ := runLoop(t, &fakeConn{msgs: [][]byte{
+		msgOpen(), msgEvent(eventSim, 1), data, data, msgQuit(),
+	}})
 
 	if want := "live,update,update,dead,ended"; got != want {
 		t.Errorf("events %q, want %q", got, want)
@@ -368,7 +370,7 @@ func TestLoopSetupFailure(t *testing.T) {
 	missing := &setupError{user: errNotFound, detail: errDetail}
 	data := goldenData(t)
 	got, n, out := runLoop(t, missing, missing, errNoSim,
-		&fakeConn{msgs: [][]byte{msgOpen(), data, msgQuit()}})
+		&fakeConn{msgs: [][]byte{msgOpen(), msgEvent(eventSim, 1), data, msgQuit()}})
 
 	want := "failed: " + errNotFound.Error() + ",fixed,live,update,dead,ended"
 	if got != want || n != 5 {
@@ -389,7 +391,8 @@ func TestLoopSetupFixedOnOpen(t *testing.T) {
 	got, _, _ := runLoop(t, missing,
 		&fakeConn{msgs: [][]byte{msgOpen(), msgEvent(eventSim, 0), msgQuit()}})
 
-	want := "failed: " + errNotFound.Error() + ",fixed,live,dead,ended"
+	// In the menu from the start: never live.
+	want := "failed: " + errNotFound.Error() + ",fixed,ended"
 	if got != want {
 		t.Errorf("events %q, want %q", got, want)
 	}
@@ -491,4 +494,84 @@ func TestLoopCancel(t *testing.T) {
 			t.Errorf("events %q (want %q), closed %v", got, want, c.closed)
 		}
 	})
+}
+
+// Without a Sim event, the session goes live simGrace after OPEN; with
+// one, as it says, at once.
+func TestLoopSimGrace(t *testing.T) {
+	t.Parallel()
+
+	data := goldenData(t)
+
+	for _, tc := range []struct {
+		name string
+		msgs [][]byte
+		want string
+	}{
+		{"no Sim event", [][]byte{msgOpen(), data}, "update,live"},
+		{"flight running", [][]byte{msgOpen(), msgEvent(eventSim, 1), data}, "live,update"},
+		// The dispatcher passes the Sim event on; the loop drops a Live
+		// that doesn't change anything.
+		{"in a menu", [][]byte{msgOpen(), msgEvent(eventSim, 0), data}, "dead,update"},
+		{"Sim before OPEN", [][]byte{msgEvent(eventSim, 1), msgOpen(), data}, "live,update"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			synctest.Test(t, func(t *testing.T) {
+				r := &recorder{}
+				ctx, cancel := context.WithCancel(t.Context())
+				done := make(chan struct{})
+
+				go func() {
+					defer close(done)
+
+					_, _ = dispatch(ctx, &fakeConn{msgs: tc.msgs},
+						&dispatcher{log: testutil.Log(t), h: r.handlers()})
+				}()
+
+				time.Sleep(2 * simGrace)
+				synctest.Wait()
+				cancel()
+				<-done
+
+				if got := r.String(); got != tc.want {
+					t.Errorf("events %q, want %q", got, tc.want)
+				}
+			})
+		})
+	}
+}
+
+// Exceptions are logged once per code and call, data for another request
+// is ignored.
+func TestExceptionPerCall(t *testing.T) {
+	t.Parallel()
+
+	var out testutil.Buffer
+
+	r := &recorder{}
+	d := &dispatcher{log: log.New(&out, "", 0), h: r.handlers()}
+
+	again := msgException(7)
+	again[sendIDOffset]++ // the same call made again, e.g. the next probe
+
+	other := msgException(7)
+	other[indexOffset]++ // another argument rejected the same way
+
+	for _, b := range [][]byte{msgException(7), again, other} {
+		d.handle(b)
+	}
+
+	if n := strings.Count(out.String(), "exception 7"); n != 2 {
+		t.Errorf("%d exception lines, want one per argument:\n%s", n, out.String())
+	}
+
+	data := goldenData(t)
+	data[requestIDOffset] = requestID + 1
+	d.handle(data)
+
+	if got := r.String(); got != "" {
+		t.Errorf("data for another request was used: %q", got)
+	}
 }

@@ -31,6 +31,22 @@ func colour(kind feed.Kind) icon.RGB {
 	return icon.Grey
 }
 
+// Tooltip layout: the title line, then the feed's status.
+const (
+	tooltipTitle = "SkyDemonConnect\n"
+	// tooltipRoom is NOTIFYICONDATAW's Tip less its NUL.
+	tooltipRoom = 127
+	// errorPrefix is what feed.Status.String puts before an error.
+	errorPrefix = feed.ErrorPrefix
+)
+
+// MaxErrLen is the room for a status error, feed.Status.Err, in the tray's
+// tooltip after its title and the error prefix; longer errors are cut.
+const MaxErrLen = tooltipRoom - len(tooltipTitle) - len(errorPrefix)
+
+// tooltip is the tooltip text for a status, as feed.Status.String gives it.
+func tooltip(status string) string { return tooltipTitle + status }
+
 // kinds are the states, each with its icon.
 func kinds() []feed.Kind { return []feed.Kind{feed.Waiting, feed.Sending, feed.Failed} }
 
@@ -81,6 +97,13 @@ type menuItem struct {
 	separator bool
 }
 
+// Menu texts for items that can't be used: greyed out, so that they don't
+// fail only after a click.
+const (
+	noLogMenuText = "Open log (no log)"
+	notFoundText  = "Start with MSFS (MSFS 2024 not found)"
+)
+
 // Start with MSFS menu texts.
 const (
 	startText = "Start with MSFS"
@@ -99,6 +122,10 @@ type menuState struct {
 	msfs         exexml.State
 	// canStart: the exe's path is known, so Start with MSFS can work.
 	canStart bool
+	// msfsFound: an MSFS 2024 install, with its exe.xml folder, exists.
+	msfsFound bool
+	// hasLog: there is a log file to open.
+	hasLog bool
 }
 
 // menu returns the tray menu.
@@ -117,14 +144,21 @@ func menu(s *menuState) []menuItem {
 	switch {
 	case !s.canStart:
 		start = menuItem{text: noExeText}
+	case !s.msfsFound:
+		start = menuItem{text: notFoundText}
 	case s.msfs == exexml.Other:
 		start.text = otherText
+	}
+
+	openLog := menuItem{text: "Open log", id: idLog}
+	if !s.hasLog {
+		openLog = menuItem{text: noLogMenuText}
 	}
 
 	return append(items,
 		menuItem{separator: true},
 		start,
-		menuItem{text: "Open log", id: idLog},
+		openLog,
 		menuItem{separator: true},
 		menuItem{text: "Quit", id: idQuit},
 	)

@@ -96,7 +96,12 @@ func runConsole(
 
 	l.Printf("SkyDemonConnect %s, %d Hz", version, feed.RateHz)
 
-	r, err := startFeed(ctx, c, input{sim: sim, endedQuits: endedQuits(c.auto, false)}, l)
+	r, err := startFeed(
+		ctx,
+		c,
+		input{sim: sim, quitOnSessionEnd: sessionEndQuits(c.auto, false)},
+		l,
+	)
 	if err != nil {
 		return err
 	}

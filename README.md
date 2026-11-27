@@ -18,13 +18,17 @@ single `.exe` in the system tray that can start and stop with MSFS.
    `%LOCALAPPDATA%\Programs\SkyDemonConnect\`, not into Downloads. A folder
    of your own profile is safer than one directly under `C:\`, where other
    users of the PC can change files. The zip contains `SimConnect.dll` from
-   the MSFS 2024 SDK; see [NOTICE.md](NOTICE.md).
+   the MSFS 2024 SDK; see [NOTICE.md](NOTICE.md). To check the download
+   first, compare `Get-FileHash SkyDemonConnect-<version>.zip` in PowerShell
+   with `SHA256SUMS` from the same release, or run
+   `gh attestation verify SkyDemonConnect-<version>.zip -R saschagrunert/skydemon-connect`.
 3. Start `SkyDemonConnect.exe`. It is not signed, so SmartScreen asks first
-   (More info → Run anyway; or right-click the zip → Properties → Unblock
-   before extracting). Smart App Control on Windows 11 blocks unsigned apps;
-   the only way around it is to turn it off (Windows Security → App & browser
-   control). If Windows Firewall asks, either answer works: SkyDemonConnect
-   only sends.
+   (More info → Run anyway; or, once the zip checked out, right-click it →
+   Properties → Unblock before extracting). Smart App Control on Windows 11
+   blocks unsigned apps, and the only way around it is to turn it off
+   (Windows Security → App & browser control); on most PCs it can't be
+   turned back on without reinstalling Windows. If Windows Firewall asks,
+   either answer works: SkyDemonConnect only sends.
 4. In SkyDemon, on the PC or a tablet: **Go Flying → Connect to X-Plane**.
 
 `.\SkyDemonConnect.exe -demo` flies a circle without MSFS, to test the
@@ -36,8 +40,9 @@ from the new copy.
 
 To uninstall, untick **Start with MSFS** (if it reads "another or disabled
 entry", click it twice: the first click puts this copy's entry in its
-place), choose **Quit** and delete the folder; the backup
-`exe.xml.bak-skydemonconnect` next to MSFS's `exe.xml` and
+place), choose **Quit** and delete the folder; the backups
+`exe.xml.bak-skydemonconnect` and `exe.xml.prev-skydemonconnect` next to
+MSFS's `exe.xml` and
 `%LOCALAPPDATA%\SkyDemonConnect` (if it exists) can go too.
 
 ## Tray icon
@@ -58,7 +63,7 @@ none. A copy run from the same folder in another Windows session logs to
 
 In MSFS's menus no position is sent and SkyDemon shows the GPS as lost.
 During an active pause (the Pause key) the last position keeps being sent,
-standing still after two seconds. Whether MSFS 2024 counts its Esc menu as a
+standing still once MSFS's frames stop changing. Whether MSFS 2024 counts its Esc menu as a
 menu or as a pause is not verified yet; the log says which (`simconnect: no
 flight running` or nothing).
 
@@ -66,7 +71,8 @@ flight running` or nothing).
 Steam), so that MSFS starts it and it quits with MSFS. It passes on the
 options this copy was started with that differ from the defaults, e.g.
 `-udp`. The original file is backed up once to
-`exe.xml.bak-skydemonconnect`. After moving the exe or to change the options,
+`exe.xml.bak-skydemonconnect`, and the file as it was before the latest
+change to `exe.xml.prev-skydemonconnect`. After moving the exe or to change the options,
 start it the new way: the menu item then reads "Start with MSFS (another or
 disabled entry)", and a click replaces the entry with this copy's. With
 `-auto`, MSFS started it and it exits when MSFS exits; if MSFS isn't its
@@ -114,7 +120,11 @@ once it is. In PowerShell 5.1, write `-udp=` rather than `-udp ""`, which it
 drops.
 
 `auto` sends to each network's broadcast address (e.g. `192.168.1.255`) and
-follows network changes. Host names such as `ipad.local:49002` are looked up
+follows network changes. That is every network adapter with IPv4 and
+broadcast, also e.g. Hyper-V's or WSL's, public Wi-Fi, and VPNs whose adapter
+looks like Ethernet to Windows (most corporate ones); dial-up and tunnel
+adapters are left out. To send only to your tablet, give its
+address instead, e.g. `-udp 192.168.1.23:49002`. Host names such as `ipad.local:49002` are looked up
 again every 10 seconds.
 
 ## Troubleshooting
@@ -153,7 +163,7 @@ true.
 The exe is cross-compiled with Go from any OS. `make help` lists the targets,
 e.g. `make build`, `make test`, `make lint` and `make demo`. `make test` uses
 the race detector, which needs a C compiler (`make test RACE=` without);
-`make lint` needs curl and tar; `make bundle` builds the release zip,
+`make lint` needs curl and tar (unzip on Windows); `make bundle` builds the release zip,
 downloading the 650 MB MSFS SDK installer, and needs curl, unzip and
 `msiextract` from msitools.
 

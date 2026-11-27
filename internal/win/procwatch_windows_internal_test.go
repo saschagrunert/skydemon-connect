@@ -1,8 +1,9 @@
 //go:build windows
 
-package main
+package win
 
 import (
+	"context"
 	"errors"
 	"os/exec"
 	"path/filepath"
@@ -67,5 +68,44 @@ func TestWatchProcess(t *testing.T) {
 	case <-ctx.Done():
 	case <-time.After(10 * time.Second):
 		t.Error("not done after the process exited")
+	}
+}
+
+// pollExit, the fallback when waiting fails, reports a process that
+// exited, and gives up once ctx is done for one that still runs.
+func TestPollExit(t *testing.T) {
+	t.Parallel()
+
+	cmd := exec.CommandContext(t.Context(), "cmd", "/c", "exit 3")
+
+	err := cmd.Start()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const access = 0x00100000 | 0x1000 // SYNCHRONIZE, PROCESS_QUERY_LIMITED_INFORMATION
+
+	h, err := syscall.OpenProcess(access, false, uint32(cmd.Process.Pid))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = syscall.CloseHandle(h) }()
+
+	_ = cmd.Wait()
+
+	if !pollExit(t.Context(), h) {
+		t.Error("an exited process: not reported")
+	}
+
+	self, err := syscall.GetCurrentProcess()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	if pollExit(ctx, self) {
+		t.Error("this process: reported as exited")
 	}
 }

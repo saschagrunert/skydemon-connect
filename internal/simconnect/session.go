@@ -220,6 +220,8 @@ func dispatch(ctx context.Context, c conn, d *dispatcher) (bool, error) {
 	lastMsg, lastProbe := start, start
 
 	for ctx.Err() == nil {
+		d.tick(time.Now())
+
 		buf := c.nextDispatch()
 		if buf == nil {
 			now := time.Now()

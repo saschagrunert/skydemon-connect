@@ -9,10 +9,11 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 
-	"github.com/saschagrunert/skydemon-connect/internal/feed"
 	"github.com/saschagrunert/skydemon-connect/internal/position"
 	"github.com/saschagrunert/skydemon-connect/internal/testutil"
+	"github.com/saschagrunert/skydemon-connect/internal/tray"
 )
 
 func TestToSample(t *testing.T) {
@@ -199,8 +200,21 @@ func TestHandle(t *testing.T) {
 		t.Error("a short buffer is not a quit")
 	}
 
-	if d.handle(msgOpen()) || !d.connected || len(live) != 1 || !live[0] {
+	// Live only once the Sim event came, or simGrace passed without one.
+	if d.handle(msgOpen()) || !d.connected || len(live) != 0 {
 		t.Errorf("open: connected=%v live=%v", d.connected, live)
+	}
+
+	d.tick(time.Now())
+
+	if len(live) != 0 {
+		t.Errorf("before simGrace: live=%v", live)
+	}
+
+	d.tick(time.Now().Add(simGrace))
+
+	if len(live) != 1 || !live[0] {
+		t.Errorf("after simGrace without a Sim event: live=%v", live)
 	}
 
 	if d.handle(msgException(7)) {
@@ -250,8 +264,8 @@ func TestUserErrorsFitTheTooltip(t *testing.T) {
 	t.Parallel()
 
 	for _, err := range []error{errNotFound, errVCRuntime, errNot64Bit, errCantLoad, errOldDLL} {
-		if n := len(err.Error()); n > feed.MaxErrLen {
-			t.Errorf("%q: %d characters, room for %d", err, n, feed.MaxErrLen)
+		if n := len(err.Error()); n > tray.MaxErrLen {
+			t.Errorf("%q: %d characters, room for %d", err, n, tray.MaxErrLen)
 		}
 	}
 }

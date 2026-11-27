@@ -1,6 +1,6 @@
 //go:build windows
 
-package tray
+package win
 
 import (
 	"fmt"

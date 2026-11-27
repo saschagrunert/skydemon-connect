@@ -150,11 +150,15 @@ func configure(h syscall.Handle, baud uint32) error {
 		return fmt.Errorf("SetCommState: %w", err)
 	}
 
-	var to commTimeouts
+	timeouts := commTimeouts{
+		WriteTotalTimeoutMultiplier: writeMultiplier(baud),
+		WriteTotalTimeoutConstant:   writeSlackMS,
+	}
 
-	to.WriteTotalTimeoutMultiplier, to.WriteTotalTimeoutConstant = writeTimeouts(baud)
-
-	if r, _, err := procSetCommTimeouts.Call(uintptr(h), uintptr(unsafe.Pointer(&to))); r == 0 {
+	if r, _, err := procSetCommTimeouts.Call(
+		uintptr(h),
+		uintptr(unsafe.Pointer(&timeouts)),
+	); r == 0 {
 		return fmt.Errorf("SetCommTimeouts: %w", err)
 	}
 

@@ -1,12 +1,12 @@
 package main
 
 import (
-	"bytes"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"math"
-	"slices"
+	"runtime"
 	"strconv"
 	"strings"
 
@@ -33,7 +33,12 @@ var (
 	errNoOut = errors.New("nothing to do: set -udp and/or -com")
 	errArg   = errors.New("options start with a dash, e.g. -demo; -udp takes one" +
 		" comma-separated list (in PowerShell, put it in quotes)")
-	errName    = fmt.Errorf("-name must be 1 to %d printable ASCII characters, no commas", maxName)
+	errQuiet     = errors.New("-quiet only works with -console")
+	errBaudNoCom = errors.New("-baud only works with -com")
+	errName      = fmt.Errorf(
+		"-name must be 1 to %d printable ASCII characters, no commas",
+		maxName,
+	)
 	errDemoLat = fmt.Errorf("-demo-lat must be within ±%g", maxDemoLat)
 	errDemoLon = fmt.Errorf("-demo-lon must be within ±%g", maxLon)
 )
@@ -55,30 +60,26 @@ type config struct {
 	version          bool
 }
 
-// localFlag reports whether a flag only makes sense for this start, not
-// for MSFS's.
-func localFlag(name string) bool {
-	switch name {
-	case "auto", "console", "demo", "demo-lat", "demo-lon", "quiet", "version":
-		return true
-	}
-
-	return false
-}
-
-// parseFlags parses args. On -help or an error it also returns the usage
-// text, which starts with the error.
+// parseFlags parses args. On -help it also returns the options' help, on
+// an error the error and how to see that help.
 func parseFlags(args []string) (config, string, error) {
-	var (
-		c     config
-		usage bytes.Buffer
-	)
+	var c config
 
 	fs := flag.NewFlagSet("SkyDemonConnect", flag.ContinueOnError)
-	fs.SetOutput(&usage)
+	fs.SetOutput(io.Discard) // the errors are returned, the help built below
+	fs.Usage = func() {}
+
+	// local marks the options that only make sense for this start, not for
+	// MSFS's: "Start with MSFS" doesn't pass them on.
+	local := map[string]bool{}
+	localFlag := func(name string) string {
+		local[name] = true
+
+		return name
+	}
 
 	fs.StringVar(&c.udp, "udp", targets.Auto,
-		"comma-separated UDP targets (host:port) for XGPS/XATT; -udp= disables UDP (with -com).\n"+
+		"comma-separated UDP targets (host:port) for XGPS/XATT; -udp= disables UDP (with -com). "+
 			`"auto" is this PC and every local network (Wi-Fi tablets), port `+
 			strconv.Itoa(foreflight.Port))
 	fs.BoolVar(&c.noAttitude, "no-xatt", false, "don't send XATT attitude messages")
@@ -86,35 +87,42 @@ func parseFlags(args []string) (config, string, error) {
 		"simulator name in XGPS/XATT messages, up to "+strconv.Itoa(maxName)+
 			" ASCII characters, no commas")
 	fs.StringVar(&c.com, "com", "", "COM port for NMEA output, e.g. COM11")
-	fs.IntVar(&c.baud, "baud", defaultBaud, "COM port baud rate")
-	fs.BoolVar(&c.demo, "demo", false, "fly a 100 kt circle without MSFS, to test SkyDemon")
-	fs.Float64Var(&c.demoLat, "demo-lat", defaultDemoLat, "demo circle centre latitude")
-	fs.Float64Var(&c.demoLon, "demo-lon", defaultDemoLon, "demo circle centre longitude")
-	fs.BoolVar(&c.quiet, "quiet", false, "with -console: no status line")
-	fs.BoolVar(&c.console, "console", false, "show a console instead of the tray icon")
-	fs.BoolVar(&c.auto, "auto", false,
+	fs.IntVar(&c.baud, "baud", defaultBaud, "COM port baud rate (with -com)")
+	fs.BoolVar(&c.demo, localFlag("demo"), false,
+		"fly a 100 kt circle without MSFS, to test SkyDemon")
+	fs.Float64Var(&c.demoLat, localFlag("demo-lat"), defaultDemoLat, "demo circle centre latitude")
+	fs.Float64Var(&c.demoLon, localFlag("demo-lon"), defaultDemoLon, "demo circle centre longitude")
+	fs.BoolVar(&c.quiet, localFlag("quiet"), false, "with -console: no status line")
+	fs.BoolVar(&c.console, localFlag("console"), false, "show a console instead of the tray icon")
+	fs.BoolVar(&c.auto, localFlag("auto"), false,
 		`started by MSFS (exe.xml): no welcome balloon or "already running" dialog,`+
 			" exit when MSFS closes")
-	fs.BoolVar(&c.version, "version", false, "show the version and exit")
+	fs.BoolVar(&c.version, localFlag("version"), false, "show the version and exit")
 
 	err := fs.Parse(args)
-	if err == nil {
-		err = validate(&c, fs.Args())
-		if err != nil {
-			_, _ = fmt.Fprintln(&usage, err)
+	if errors.Is(err, flag.ErrHelp) {
+		return c, help(fs), err
+	}
 
-			fs.Usage()
-		}
+	set := map[string]bool{}
+
+	fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
+
+	if err == nil {
+		err = validate(&c, fs.Args(), set)
 	}
 
 	if err != nil {
-		return c, usage.String(), fmt.Errorf("parse flags: %w", err)
+		return c, err.Error() + "\n\nRun with -help to see the options.", fmt.Errorf(
+			"parse flags: %w",
+			err,
+		)
 	}
 
 	fs.Visit(func(f *flag.Flag) {
 		// A flag given at its default changes nothing: leaving it out
 		// keeps exe.xml matching a plain start.
-		if !localFlag(f.Name) && f.Value.String() != f.DefValue {
+		if !local[f.Name] && f.Value.String() != f.DefValue {
 			c.passOn = append(c.passOn, "-"+f.Name+"="+f.Value.String())
 		}
 	})
@@ -122,10 +130,33 @@ func parseFlags(args []string) (config, string, error) {
 	return c, "", nil
 }
 
-func validate(c *config, rest []string) error {
+// help lists the options for -help, readable in a message box too: flag's
+// own layout aligns with tabs, which a dialog's font doesn't.
+func help(fs *flag.FlagSet) string {
+	var b strings.Builder
+
+	b.WriteString("SkyDemonConnect options:\n")
+
+	fs.VisitAll(func(f *flag.Flag) {
+		b.WriteString("\n-" + f.Name)
+
+		if f.DefValue != "" && f.DefValue != "false" {
+			b.WriteString(" (default " + f.DefValue + ")")
+		}
+
+		b.WriteString(":\n    " + f.Usage + "\n")
+	})
+
+	return b.String()
+}
+
+// validate checks the options; set holds the names of those given.
+func validate(c *config, rest []string, set map[string]bool) error {
 	switch {
 	case len(rest) > 0:
 		return fmt.Errorf("unexpected argument %q: %w", rest[0], errArg)
+	case c.quiet && !c.console && runtime.GOOS == "windows":
+		return errQuiet
 	case !validName(c.name):
 		return errName
 	case math.IsNaN(c.demoLat) || math.Abs(c.demoLat) > maxDemoLat:
@@ -134,11 +165,12 @@ func validate(c *config, rest []string) error {
 		return errDemoLon
 	}
 
-	return validateOutputs(c)
+	return validateOutputs(c, set["baud"])
 }
 
-// validateOutputs checks -udp, -com and -baud, and keeps -udp parsed.
-func validateOutputs(c *config) error {
+// validateOutputs checks -udp, -com and -baud, and keeps -udp parsed;
+// baudSet is whether -baud was given.
+func validateOutputs(c *config, baudSet bool) error {
 	spec, err := targets.Parse(c.udp, foreflight.Port)
 	if err != nil {
 		return fmt.Errorf("-udp: %w", err)
@@ -155,6 +187,10 @@ func validateOutputs(c *config) error {
 		return fmt.Errorf("-baud: %w", err)
 	}
 
+	if baudSet && c.com == "" {
+		return errBaudNoCom
+	}
+
 	return nil
 }
 
@@ -163,20 +199,4 @@ func validateOutputs(c *config) error {
 func validName(name string) bool {
 	return name != "" && len(name) <= maxName &&
 		!strings.ContainsFunc(name, func(r rune) bool { return r == ',' || r < ' ' || r > '~' })
-}
-
-// insideArchive reports whether dir is where an archiver runs an exe opened
-// from inside an archive: Explorer's %TEMP%\Temp1_SkyDemonConnect.zip,
-// 7-Zip's %TEMP%\7zO... or WinRAR's %TEMP%\Rar$EX....
-func insideArchive(dir string) bool {
-	return slices.ContainsFunc(
-		strings.FieldsFunc(
-			strings.ToLower(dir),
-			func(r rune) bool { return r == '\\' || r == '/' },
-		),
-		func(part string) bool {
-			return strings.HasSuffix(part, ".zip") || strings.HasPrefix(part, "7zo") ||
-				strings.HasPrefix(part, "rar$ex")
-		},
-	)
 }

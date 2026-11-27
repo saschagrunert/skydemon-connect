@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"flag"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -24,14 +25,18 @@ func TestParseFlags(t *testing.T) {
 	}
 
 	_, usage, err := parseFlags([]string{"-hz", "10"}) // removed: always 30 Hz
-	if err == nil || !strings.Contains(usage, "-udp") ||
-		strings.Count(usage, "flag provided but not defined") != 1 {
+	if err == nil || !strings.HasPrefix(usage, "flag provided but not defined: -hz\n") ||
+		!strings.HasSuffix(usage, "Run with -help to see the options.") {
 		t.Errorf("unknown flag: %v, usage %q", err, usage)
 	}
 
+	// The help is for a message box: no tab alignment, every option.
 	_, usage, err = parseFlags([]string{"-help"})
-	if !errors.Is(err, flag.ErrHelp) || usage == "" {
-		t.Errorf("-help: %v", err)
+	if !errors.Is(err, flag.ErrHelp) || strings.Contains(usage, "\t") ||
+		!strings.Contains(usage, "\n-baud (default 115200):\n    COM port baud rate") ||
+		!strings.Contains(usage, "\n-udp (default auto):\n") ||
+		!strings.Contains(usage, "\n-version:\n") {
+		t.Errorf("-help: %v\n%s", err, usage)
 	}
 
 	c, _, err = parseFlags([]string{"-version"})
@@ -48,8 +53,9 @@ func TestParseFlagsValidates(t *testing.T) {
 		args []string
 	}{
 		{errArg, []string{"-udp", "192.168.1.20:49002,", "192.168.1.21:49002"}},
-		{serial.ErrBaud, []string{"-baud", "0"}},
-		{serial.ErrBaud, []string{"-baud", "4294967296"}},
+		{serial.ErrBaud, []string{"-com", "COM1", "-baud", "0"}},
+		{serial.ErrBaud, []string{"-com", "COM1", "-baud", "4294967296"}},
+		{errBaudNoCom, []string{"-baud", "9600"}},
 		{errNoOut, []string{"-udp="}},
 		{errNoOut, []string{"-udp", " , "}},
 		{errName, []string{"-name", "MS,FS"}},
@@ -63,9 +69,25 @@ func TestParseFlagsValidates(t *testing.T) {
 		_, usage, err := parseFlags(tc.args)
 		if !errors.Is(err, tc.want) ||
 			!strings.Contains(strings.SplitN(usage, "\n", 2)[0], tc.want.Error()) ||
-			!strings.Contains(usage, "-udp") {
+			!strings.Contains(usage, "-help") {
 			t.Errorf("%v: %v, usage %q", tc.args, err, usage)
 		}
+	}
+}
+
+// -quiet only changes the console's status line; outside Windows the
+// console mode is the only one.
+func TestParseFlagsQuiet(t *testing.T) {
+	t.Parallel()
+
+	_, _, err := parseFlags([]string{"-quiet"})
+	if want := runtime.GOOS == "windows"; errors.Is(err, errQuiet) != want {
+		t.Errorf("-quiet alone: %v", err)
+	}
+
+	_, _, err = parseFlags([]string{"-quiet", "-console"})
+	if err != nil {
+		t.Errorf("-quiet -console: %v", err)
 	}
 }
 

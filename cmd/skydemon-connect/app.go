@@ -6,10 +6,10 @@ import (
 	"io"
 	"log"
 	"net"
+	"net/netip"
 	"slices"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/saschagrunert/skydemon-connect/internal/demo"
@@ -30,15 +30,40 @@ const (
 
 // outputs are the opened destinations.
 type outputs struct {
-	feed.Outputs
-
 	resolver *targets.Resolver
+	// conn sends to the UDP targets; nil without any.
+	conn *net.UDPConn
+	// port is the COM port for NMEA; nil without -com.
+	port io.WriteCloser
 	// targets are the UDP destinations at the start: the ones that need no
 	// name lookup, so that nothing waits for a tablet that is off.
 	targets targets.List
-	udp     io.Closer
-	serial  io.Closer
 }
+
+// feedOutputs returns what the feed sends to, as c configures it.
+func (o *outputs) feedOutputs(c *config) feed.Outputs {
+	outs := feed.Outputs{
+		UDP:        nil,
+		Name:       c.name,
+		NoAttitude: c.noAttitude,
+		Serial:     nil,
+		SerialName: c.com,
+	}
+
+	// An interface holding a nil pointer isn't nil: only set what is open.
+	if o.conn != nil {
+		outs.UDP = o.conn
+	}
+
+	if o.port != nil {
+		outs.Serial = o.port
+	}
+
+	return outs
+}
+
+// nmeaText describes the NMEA output, e.g. "COM11 at 115200 baud".
+func nmeaText(c *config) string { return fmt.Sprintf("%s at %d baud", c.com, c.baudRate) }
 
 // shutdown closes the outputs once the background work, already
 // told to stop, ended or shutdownWait passed.
@@ -47,7 +72,9 @@ func (o *outputs) shutdown(work *sync.WaitGroup, l *log.Logger) {
 	// which the wait below would otherwise sit out. An open that blocks
 	// in the driver, e.g. of a Bluetooth port whose device is off, is
 	// still waited out.
-	closeQuietly(o.serial)
+	if o.port != nil {
+		_ = o.port.Close()
+	}
 
 	done := make(chan struct{})
 
@@ -62,14 +89,15 @@ func (o *outputs) shutdown(work *sync.WaitGroup, l *log.Logger) {
 		l.Printf("shutdown: gave up waiting for background work")
 	}
 
-	closeQuietly(o.udp)
+	if o.conn != nil {
+		_ = o.conn.Close()
+	}
 }
 
 // openOutputs opens what c, as validated by parseFlags, sends to.
 func openOutputs(c *config, l *log.Logger) (*outputs, error) {
 	spec := c.spec
-	outs := &outputs{resolver: spec.Resolver(l)}
-	outs.Name, outs.NoAttitude, outs.SerialName = c.name, c.noAttitude, c.com
+	outs := &outputs{resolver: spec.Resolver(l), conn: nil, port: nil, targets: nil}
 
 	if !spec.Empty() {
 		// Go enables SO_BROADCAST on IPv4 UDP sockets.
@@ -78,17 +106,16 @@ func openOutputs(c *config, l *log.Logger) (*outputs, error) {
 			return nil, fmt.Errorf("udp: %w", err)
 		}
 
-		outs.UDP, outs.udp, outs.targets = conn, conn, outs.resolver.Known()
+		outs.conn, outs.targets = conn, outs.resolver.Known()
 
 		l.Printf("udp: %s, sending to %s", spec.Describe(), outs.targets)
 	}
 
 	if c.com != "" {
 		// A missing port is opened once it is there.
-		port := serial.Open(c.com, c.baudRate)
-		outs.Serial, outs.serial = port, port
+		outs.port = serial.Open(c.com, c.baudRate)
 
-		l.Printf("nmea: RMC/GGA/GSA to %s at %d baud", c.com, c.baudRate)
+		l.Printf("nmea: RMC/GGA/GSA to %s", nmeaText(c))
 	}
 
 	return outs, nil
@@ -98,7 +125,7 @@ func openOutputs(c *config, l *log.Logger) (*outputs, error) {
 type running struct {
 	feed *feed.Feed
 	// quit is closed when the app should exit: once parent is done, or
-	// once a SimConnect session ended, with endedQuits.
+	// once a SimConnect session ended, with quitOnSessionEnd.
 	quit <-chan struct{}
 	// stop ends the background work and closes the outputs: the COM port
 	// at once, the UDP socket once the work ended, so that the SimConnect
@@ -115,16 +142,16 @@ type simFunc func(ctx context.Context, l *log.Logger, h simconnect.Handlers)
 // input is where positions come from.
 type input struct {
 	sim simFunc
-	// endedQuits: the app exits when a SimConnect session ends, i.e. MSFS
-	// closed; see endedQuits.
-	endedQuits bool
+	// quitOnSessionEnd: the app exits when a SimConnect session ends,
+	// i.e. MSFS closed; see sessionEndQuits.
+	quitOnSessionEnd bool
 }
 
-// endedQuits reports whether the app exits when a SimConnect session ends:
-// with -auto, unless the MSFS process itself is watched, which also covers
-// MSFS closing before a session started, and doesn't end the app when
-// only the connection drops.
-func endedQuits(auto, msfsWatched bool) bool { return auto && !msfsWatched }
+// sessionEndQuits reports whether the app exits when a SimConnect session
+// ends: with -auto, unless the MSFS process itself is watched, which also
+// covers MSFS closing before a session started, and doesn't end the app
+// when only the connection drops.
+func sessionEndQuits(auto, msfsWatched bool) bool { return auto && !msfsWatched }
 
 // startFeed opens the outputs and runs the feed, its input (sim, or the
 // demo with -demo) and the target refresh in the background, logging to l.
@@ -134,16 +161,8 @@ func startFeed(parent context.Context, c *config, src input, l *log.Logger) (*ru
 		return nil, err
 	}
 
-	f := feed.New(outs.Outputs, l)
-
-	var current atomic.Pointer[targets.List]
-
-	setTargets := func(t targets.List) {
-		current.Store(&t)
-		f.SetTargets(t)
-	}
-
-	setTargets(outs.targets)
+	f := feed.New(outs.feedOutputs(c), l)
+	f.SetTargets(outs.targets)
 
 	ctx, cancel := context.WithCancel(parent)
 	// quit is done when parent is, or when the feed asks to quit.
@@ -156,7 +175,7 @@ func startFeed(parent context.Context, c *config, src input, l *log.Logger) (*ru
 
 	if c.spec.Dynamic() {
 		wg.Go(func() {
-			refreshTargets(ctx, targetRefresh, outs.resolver.Resolve, setTargets, outs.targets, l)
+			refreshTargets(ctx, targetRefresh, outs.resolver.Resolve, f.SetTargets, outs.targets, l)
 		})
 	}
 
@@ -170,12 +189,12 @@ func startFeed(parent context.Context, c *config, src input, l *log.Logger) (*ru
 	destinations := func() []string {
 		var lines []string
 
-		if t := current.Load(); t != nil && outs.udp != nil {
-			lines = append(lines, "UDP: "+menuTargets(*t))
+		if outs.conn != nil {
+			lines = append(lines, "UDP: "+menuTargets(f.Targets()))
 		}
 
 		if c.com != "" {
-			lines = append(lines, fmt.Sprintf("NMEA: %s at %d baud", c.com, c.baudRate))
+			lines = append(lines, "NMEA: "+nmeaText(c))
 		}
 
 		return lines
@@ -186,7 +205,7 @@ func startFeed(parent context.Context, c *config, src input, l *log.Logger) (*ru
 
 // menuTargets lists targets for the menu, short: without the default
 // port.
-func menuTargets(t targets.List) string {
+func menuTargets(t []netip.AddrPort) string {
 	if len(t) == 0 {
 		return "no target yet"
 	}
@@ -200,14 +219,6 @@ func menuTargets(t targets.List) string {
 	}
 
 	return strings.Join(s, ", ")
-}
-
-// closeQuietly closes c, if any; at shutdown there is nobody to tell about
-// an error.
-func closeQuietly(c io.Closer) {
-	if c != nil {
-		_ = c.Close()
-	}
 }
 
 func runInput(
@@ -231,7 +242,7 @@ func runInput(
 		Live:      f.SetLive,
 		Connected: f.SetConnected,
 		Ended: func() {
-			if src.endedQuits {
+			if src.quitOnSessionEnd {
 				l.Printf("auto: MSFS closed, exiting")
 				quit()
 			}
@@ -247,7 +258,7 @@ func refreshTargets(
 	ctx context.Context,
 	every time.Duration,
 	resolve func(context.Context) targets.List,
-	set func(targets.List),
+	set func([]netip.AddrPort),
 	current targets.List,
 	l *log.Logger,
 ) {
@@ -272,4 +283,20 @@ func refreshTargets(
 		case <-tick.C:
 		}
 	}
+}
+
+// insideArchive reports whether dir is where an archiver runs an exe opened
+// from inside an archive: Explorer's %TEMP%\Temp1_SkyDemonConnect.zip,
+// 7-Zip's %TEMP%\7zO... or WinRAR's %TEMP%\Rar$EX....
+func insideArchive(dir string) bool {
+	return slices.ContainsFunc(
+		strings.FieldsFunc(
+			strings.ToLower(dir),
+			func(r rune) bool { return r == '\\' || r == '/' },
+		),
+		func(part string) bool {
+			return strings.HasSuffix(part, ".zip") || strings.HasPrefix(part, "7zo") ||
+				strings.HasPrefix(part, "rar$ex")
+		},
+	)
 }
