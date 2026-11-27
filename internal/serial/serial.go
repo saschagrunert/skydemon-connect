@@ -31,20 +31,14 @@ func CheckBaud(baud int) (uint32, error) {
 	return uint32(baud), nil
 }
 
-// Open returns a writer to the COM port name (e.g. "COM11") at baud, 8N1.
-// The port is opened by the first write, so that one that isn't there yet,
-// e.g. a USB adapter still being set up after login, is picked up later.
-// When a write fails, e.g. because the adapter went away while the PC
-// slept, the port is closed and reopened by a later write, at most once per
-// second; until then writes fail with the error. Open only fails for a baud
-// rate the port can't be set to.
-func Open(name string, baud int) (io.WriteCloser, error) {
-	b, err := CheckBaud(baud)
-	if err != nil {
-		return nil, err
-	}
-
-	return newReopening(func() (io.WriteCloser, error) { return openPort(name, b) }), nil
+// Open returns a writer to the COM port name (e.g. "COM11") at baud, 8N1,
+// a rate CheckBaud accepted. The port is opened by the first write, so that
+// one that isn't there yet, e.g. a USB adapter still being set up after
+// login, is picked up later. When a write fails, e.g. because the adapter
+// went away while the PC slept, the port is closed and reopened by a later
+// write, at most once per second; until then writes fail with the error.
+func Open(name string, baud uint32) io.WriteCloser {
+	return newReopening(func() (io.WriteCloser, error) { return openPort(name, baud) })
 }
 
 const (
@@ -232,22 +226,36 @@ func (c *idleCloser) Close() error {
 
 	c.closed = true
 	if wrote := c.wrote; wrote != nil {
-		go func() {
-			for {
-				c.cancel()
-
-				select {
-				case <-wrote:
-					return
-				case <-time.After(cancelRetry):
-				}
-			}
-		}()
+		go c.cancelUntil(wrote)
 
 		return nil
 	}
 
 	return c.port.Close()
+}
+
+// cancelUntil cancels the write in progress, again every cancelRetry, until
+// it returned. It cancels only under the lock while that write is still the
+// one in progress: the handle is closed once it returned, and Windows reuses
+// handle values, so a late cancel could hit another handle's I/O.
+func (c *idleCloser) cancelUntil(wrote chan struct{}) {
+	for {
+		c.mu.Lock()
+		if c.wrote != wrote {
+			c.mu.Unlock()
+
+			return
+		}
+
+		c.cancel()
+		c.mu.Unlock()
+
+		select {
+		case <-wrote:
+			return
+		case <-time.After(cancelRetry):
+		}
+	}
 }
 
 const (

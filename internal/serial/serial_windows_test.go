@@ -14,25 +14,13 @@ func TestOpenMissingPort(t *testing.T) {
 	t.Parallel()
 
 	for _, name := range []string{"COM250", `\\.\COM251`} {
-		port, err := serial.Open(name, 9600)
-		if err != nil {
-			t.Fatalf("%s: %v", name, err)
-		}
+		port := serial.Open(name, 9600)
 
-		_, err = port.Write([]byte("$A\r\n"))
+		_, err := port.Write([]byte("$A\r\n"))
 		if err == nil {
 			t.Errorf("%s: wrote to a COM port that should not exist", name)
 		}
 
 		_ = port.Close()
-	}
-}
-
-func TestOpenBadBaud(t *testing.T) {
-	t.Parallel()
-
-	_, err := serial.Open("COM1", 0)
-	if err == nil {
-		t.Error("baud 0 accepted")
 	}
 }

@@ -51,6 +51,12 @@ func (s *statusLine) show(text string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	// Cut to the cleared width, so that a long status, e.g. an error,
+	// leaves nothing behind when a shorter one replaces it.
+	if r := []rune(text); len(r) > statusWidth {
+		text = string(r[:statusWidth-1]) + "…"
+	}
+
 	_, _ = fmt.Fprintf(s.out, "\r%-*s", statusWidth, text)
 	s.shown = true
 }

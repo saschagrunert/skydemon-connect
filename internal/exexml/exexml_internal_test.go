@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 )
 
@@ -26,6 +27,16 @@ const sample = "<?xml version=\"1.0\" encoding=\"Windows-1252\"?>\r\n" +
 	"\t\t<CommandLine>-m</CommandLine>\r\n" +
 	"\t</Launch.Addon>\r\n" +
 	"</SimBase.Document>\r\n"
+
+// enabled reports whether installs launch exe with args.
+func enabled(installs Installs, exe string, args []string) bool {
+	return installs.State(exe, args) == Ours
+}
+
+// has reports whether doc contains our entry for exePath and commandLine.
+func has(doc, exePath, commandLine string) bool {
+	return entryState(doc, exePath, commandLine) == Ours
+}
 
 func wellFormed(t *testing.T, doc string) {
 	t.Helper()
@@ -197,8 +208,8 @@ func TestSet(t *testing.T) {
 
 	const exe = `C:\Tools\Jürgen\SkyDemonConnect.exe`
 
-	if len(installs) != 2 || installs.Enabled(exe, nil) {
-		t.Fatalf("installs %v, enabled %v", installs, installs.Enabled(exe, nil))
+	if len(installs) != 2 || enabled(installs, exe, nil) {
+		t.Fatalf("installs %v, enabled %v", installs, enabled(installs, exe, nil))
 	}
 
 	err = installs.Set(true, exe, nil)
@@ -206,7 +217,7 @@ func TestSet(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if !installs.Enabled(exe, nil) || !installs.Enabled(strings.ToUpper(exe), nil) {
+	if !enabled(installs, exe, nil) || !enabled(installs, strings.ToUpper(exe), nil) {
 		t.Fatal("not enabled")
 	}
 
@@ -225,7 +236,7 @@ func TestSet(t *testing.T) {
 	// After moving the exe, the old entry doesn't count, and enabling
 	// replaces it, without overwriting the backup of the original.
 	const moved = `C:\Other\SkyDemonConnect.exe`
-	if installs.Enabled(moved, nil) {
+	if enabled(installs, moved, nil) {
 		t.Error("an entry for the old path counts for the moved exe")
 	}
 
@@ -234,7 +245,7 @@ func TestSet(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if !installs.Enabled(moved, nil) || installs.Enabled(exe, nil) ||
+	if !enabled(installs, moved, nil) || enabled(installs, exe, nil) ||
 		strings.Count(readFile(t, store), "<Name>"+entryName+"</Name>") != 1 {
 		t.Errorf("entry not replaced:\n%s", readFile(t, store))
 	}
@@ -248,7 +259,7 @@ func TestSet(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if installs.Enabled(moved, nil) || readFile(t, store) != sample {
+	if enabled(installs, moved, nil) || readFile(t, store) != sample {
 		t.Error("disable did not restore the original")
 	}
 }
@@ -282,7 +293,7 @@ func TestSetNoInstall(t *testing.T) {
 		t.Errorf("expected errNoInstall without MSFS folders: %v", err)
 	}
 
-	if installs.Enabled(`C:\x.exe`, nil) {
+	if enabled(installs, `C:\x.exe`, nil) {
 		t.Error("enabled without MSFS folders")
 	}
 }
@@ -369,12 +380,23 @@ func TestSetWrites(t *testing.T) {
 			want: []string{`<Path>C:\Users\O'Brien &amp; Co\SkyDemonConnect.exe</Path>`},
 		},
 		{
-			// Options are passed on, quotes as they are.
+			// Options are passed on, quoted for the command line where
+			// they need it, the quotes as they are.
 			name: "options",
 			doc:  sample,
 			exe:  `C:\x.exe`,
-			args: []string{"-udp", `"auto,192.168.1.23:49002"`},
-			want: []string{`<CommandLine>-auto -udp "auto,192.168.1.23:49002"</CommandLine>`},
+			args: []string{"-udp=auto,192.168.1.23:49002", "-name=My Sim"},
+			want: []string{
+				`<CommandLine>-auto -udp=auto,192.168.1.23:49002 "-name=My Sim"</CommandLine>`,
+			},
+		},
+		{
+			// < and > in an option are escaped, and read back.
+			name: "angle brackets",
+			doc:  sample,
+			exe:  `C:\x.exe`,
+			args: []string{"-name=<a>"},
+			want: []string{"<CommandLine>-auto -name=&lt;a&gt;</CommandLine>"},
 		},
 		{
 			// An entry with other options is replaced with these.
@@ -412,12 +434,12 @@ func TestSetWrites(t *testing.T) {
 
 			wellFormed(t, asUTF8(got))
 
-			if !installs.Enabled(tc.exe, tc.args) {
+			if !enabled(installs, tc.exe, tc.args) {
 				t.Error("the entry doesn't match its path and options")
 			}
 
-			if len(tc.args) > 0 && installs.Enabled(tc.exe, nil) {
-				t.Error("an entry with other options counts as enabled")
+			if len(tc.args) > 0 && installs.State(tc.exe, nil) != Other {
+				t.Error("an entry with other options isn't another entry")
 			}
 		})
 	}
@@ -526,9 +548,16 @@ func TestSetReadError(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// The error names the file as resolved: on Windows, t.TempDir can be
+	// an 8.3 short path, which resolving makes long.
+	path, err := filepath.EvalSymlinks(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	err = installs.Set(true, `C:\x.exe`, nil)
-	if err == nil || strings.Count(err.Error(), store) != 1 ||
-		!strings.HasPrefix(err.Error(), "read "+store+": ") {
+	if err == nil || strings.Count(err.Error(), path) != 1 ||
+		!strings.HasPrefix(err.Error(), "read "+path+": ") {
 		t.Errorf("read error not reported once, with its path: %v", err)
 	}
 
@@ -704,5 +733,170 @@ func TestSetOwnErrorNamesFile(t *testing.T) {
 	err = installs.Set(true, `C:\x.exe`, nil)
 	if !errors.Is(err, errNoDocClose) || !strings.HasPrefix(err.Error(), store+": ") {
 		t.Errorf("own error without the file's path: %v", err)
+	}
+}
+
+// State tells our entry from another one, e.g. for a moved exe, other
+// options, or one disabled by hand, and from none.
+func TestState(t *testing.T) {
+	t.Parallel()
+
+	installs, store, _ := setup(t)
+	exe, args := `C:\x.exe`, []string{"-com=COM11"}
+
+	if got := installs.State(exe, args); got != Absent {
+		t.Errorf("no files: %v", got)
+	}
+
+	err := installs.Set(true, exe, args)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		exe  string
+		args []string
+		want State
+	}{
+		{exe, args, Ours},
+		{`C:\Moved\x.exe`, args, Other},
+		{exe, nil, Other},
+	} {
+		if got := installs.State(tc.exe, tc.args); got != tc.want {
+			t.Errorf("State(%s, %q) = %v, want %v", tc.exe, tc.args, got, tc.want)
+		}
+	}
+
+	// Disable our entry by hand, as MSFS's own switch does.
+	doc := readFile(t, store)
+	i := strings.Index(doc, "<Name>"+entryName+"</Name>")
+	disabled := doc[:i] + strings.Replace(doc[i:], "<Disabled>False", "<Disabled>True", 1)
+
+	err = os.WriteFile(store, []byte(disabled), 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The Steam file still has the enabled entry: look at this one only.
+	if got := (Installs{store}).State(exe, args); got != Other {
+		t.Errorf("a disabled entry: %v, want Other", got)
+	}
+}
+
+func TestQuoteArg(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct{ arg, want string }{
+		{`-udp=auto`, `-udp=auto`},
+		{``, `""`},
+		{`-name=a b`, `"-name=a b"`},
+		{`-name=a"b`, `"-name=a\"b"`},
+		{`-name=a\ b\`, `"-name=a\ b\\"`},
+	} {
+		if got := quoteArg(tc.arg); got != tc.want {
+			t.Errorf("quoteArg(%q) = %q, want %q", tc.arg, got, tc.want)
+		}
+	}
+}
+
+var errBusy = errors.New("busy")
+
+// Replacing a file another program has open is retried for a while.
+func TestReplaceRetries(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name  string
+		fails int
+		err   error
+		calls int
+	}{
+		{"works", 0, nil, 1},
+		{"busy for a moment", 3, nil, 4},
+		{"busy for too long", replaceTries + 5, errBusy, replaceTries},
+		{"another error", 1, errNotFile, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			calls, slept := 0, time.Duration(0)
+			rename := func(string, string) error {
+				calls++
+				if calls <= tc.fails {
+					if errors.Is(tc.err, errNotFile) {
+						return errNotFile
+					}
+
+					return errBusy
+				}
+
+				return nil
+			}
+
+			err := replace("a", "b", rename,
+				func(err error) bool { return errors.Is(err, errBusy) },
+				func(d time.Duration) { slept += d })
+			if !errors.Is(err, tc.err) || calls != tc.calls {
+				t.Errorf("err %v after %d calls, want %v after %d", err, calls, tc.err, tc.calls)
+			}
+
+			if slept > time.Second {
+				t.Errorf("waited %v", slept)
+			}
+		})
+	}
+}
+
+// A symlinked exe.xml stays a symlink; the file it points to is edited.
+func TestSetSymlink(t *testing.T) {
+	t.Parallel()
+
+	installs, store, _ := setup(t)
+	target := filepath.Join(t.TempDir(), "exe.xml")
+
+	err := os.WriteFile(target, []byte(sample), 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = os.Symlink(target, store)
+	if err != nil {
+		t.Skipf("no symlinks here: %v", err)
+	}
+
+	err = installs.Set(true, `C:\x.exe`, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	fi, err := os.Lstat(store)
+	if err != nil || fi.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("the symlink was replaced: %v", err)
+	}
+
+	if !strings.Contains(readFile(t, target), "<Name>"+entryName+"</Name>") {
+		t.Error("the file the symlink points to wasn't edited")
+	}
+}
+
+// A file that changed after it was read isn't overwritten.
+func TestWriteIfUnchanged(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "exe.xml")
+
+	err := os.WriteFile(path, []byte("theirs"), 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = writeIfUnchanged(path, []byte("before"), []byte("ours"))
+	if !errors.Is(err, errChanged) || readFile(t, path) != "theirs" {
+		t.Errorf("err %v, file %q", err, readFile(t, path))
+	}
+
+	err = writeIfUnchanged(path, []byte("theirs"), []byte("ours"))
+	if err != nil || readFile(t, path) != "ours" {
+		t.Errorf("err %v, file %q", err, readFile(t, path))
 	}
 }

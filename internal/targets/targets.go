@@ -14,6 +14,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/saschagrunert/skydemon-connect/internal/report"
@@ -24,7 +25,7 @@ const Auto = "auto"
 
 var (
 	errSyntax   = errors.New("not host:port, e.g. 192.168.1.23:49002")
-	errAutoPort = errors.New(`"auto" takes no port; it always uses 49002`)
+	errAutoPort = errors.New(`"auto" takes no port`)
 	errNoHost   = errors.New("missing host")
 	errBadHost  = errors.New("not an IPv4 address or a host name")
 	errNoPort   = errors.New("port must be 1-65535")
@@ -86,7 +87,7 @@ func Parse(list string, port uint16) (*Spec, error) {
 		case strings.EqualFold(t, Auto):
 			spec.auto = true
 		case strings.HasPrefix(strings.ToLower(t), Auto+":"):
-			return nil, fmt.Errorf("bad target %q: %w", t, errAutoPort)
+			return nil, fmt.Errorf("bad target %q: %w; it always uses %d", t, errAutoPort, port)
 		default:
 			err := spec.add(t)
 			if err != nil {
@@ -126,33 +127,66 @@ func (s *Spec) Resolver(l *log.Logger) *Resolver {
 	return &Resolver{spec: s, lookup: lookupIPv4, errs: report.New(l)}
 }
 
+// Known returns the destinations that need no name lookup: the literal
+// addresses and auto's. With them the feed starts at once; Resolve adds
+// the host names later.
+func (r *Resolver) Known() List {
+	return dedupe(append(slices.Clone(r.spec.fixed), r.auto()...))
+}
+
 // Resolve returns the destinations for the current network configuration.
-// A host name that doesn't resolve is left out until it does. A lookup
-// cut short by ctx is not logged: that is a shutdown, not a failure.
+// Host names are looked up in parallel, each within lookupTimeout; one that
+// doesn't resolve is left out until it does. A lookup cut short by ctx is
+// not logged: that is a shutdown, not a failure.
 func (r *Resolver) Resolve(ctx context.Context) List {
 	s := r.spec
+	found := make([]netip.AddrPort, len(s.hosts))
+	ok := make([]bool, len(s.hosts))
+
+	var wg sync.WaitGroup
+
+	for i, h := range s.hosts {
+		wg.Go(func() {
+			a, err := r.resolve(ctx, h)
+			if ctx.Err() == nil {
+				r.errs.Report("targets: "+h.String(), err)
+			}
+
+			found[i], ok[i] = a, err == nil
+		})
+	}
+
+	wg.Wait()
+
 	out := slices.Clone(s.fixed)
 
-	for _, h := range s.hosts {
-		a, err := r.resolve(ctx, h)
-		if ctx.Err() == nil {
-			r.errs.Report("targets: "+h.String(), err)
-		}
-
-		if err == nil {
+	for i, a := range found {
+		if ok[i] {
 			out = append(out, a)
 		}
 	}
 
-	if s.auto {
-		out = append(out, netip.AddrPortFrom(netip.AddrFrom4([4]byte{127, 0, 0, 1}), s.port))
+	return dedupe(append(out, r.auto()...))
+}
 
-		for _, ip := range localBroadcasts() {
-			out = append(out, netip.AddrPortFrom(ip, s.port))
-		}
+// auto returns this PC and the local networks' broadcast addresses, if the
+// spec has auto.
+func (r *Resolver) auto() List {
+	s := r.spec
+	if !s.auto {
+		return nil
 	}
 
-	return dedupe(out)
+	out := List{netip.AddrPortFrom(netip.AddrFrom4([4]byte{127, 0, 0, 1}), s.port)}
+
+	ips, err := localBroadcasts()
+	r.errs.Report("targets: network interfaces", err)
+
+	for _, ip := range ips {
+		out = append(out, netip.AddrPortFrom(ip, s.port))
+	}
+
+	return out
 }
 
 func dedupe(l List) List {
@@ -173,10 +207,10 @@ func dedupe(l List) List {
 // IPv4 network. Subnet broadcasts are used instead of 255.255.255.255,
 // which Windows sends out of one adapter only: with VPN or Hyper-V
 // adapters, often not the Wi-Fi.
-func localBroadcasts() []netip.Addr {
+func localBroadcasts() ([]netip.Addr, error) {
 	ifaces, err := net.Interfaces()
 	if err != nil {
-		return nil
+		return nil, err
 	}
 
 	var addrs []net.Addr
@@ -193,7 +227,7 @@ func localBroadcasts() []netip.Addr {
 		}
 	}
 
-	return broadcasts(addrs)
+	return broadcasts(addrs), nil
 }
 
 // broadcasts returns the directed broadcast addresses of the IPv4 networks

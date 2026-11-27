@@ -43,6 +43,9 @@ FILE_VERSION := $(or $(shell echo "$(VERSION)" | sed -nE 's/^v?([0-9]+)\.([0-9]+
 HOST_OS := $(shell $(GO) env GOHOSTOS)
 HOST_ARCH := $(shell $(GO) env GOHOSTARCH)
 
+# The build's own tools run here, also when GOOS=windows is exported.
+HOST_GO := GOOS=$(HOST_OS) GOARCH=$(HOST_ARCH) $(GO)
+
 # The code is mostly Windows-only (SimConnect, Win32 tray, COM ports), so
 # it is linted for both: the host run never loads *_windows.go files.
 LINT_OSES = $(sort $(HOST_OS) windows)
@@ -100,7 +103,7 @@ $(BINARY): $(SYSO)
 
 .PHONY: $(SYSO)
 $(SYSO): $(BUILD_DIR)/go-winres
-	$(GO) run ./internal/icon/genpng $(BUILD_DIR)/icon.png
+	$(HOST_GO) run ./internal/icon/genpng $(BUILD_DIR)/icon.png
 	$(BUILD_DIR)/go-winres simply --arch amd64 --manifest gui --icon $(BUILD_DIR)/icon.png \
 		--product-name SkyDemonConnect --file-description SkyDemonConnect \
 		--original-filename SkyDemonConnect.exe --copyright "The SkyDemonConnect Authors" \
@@ -109,23 +112,21 @@ $(SYSO): $(BUILD_DIR)/go-winres
 
 $(BUILD_DIR)/go-winres: tools/go.mod tools/go.sum
 	@mkdir -p $(BUILD_DIR)
-	cd tools && $(GO) build -o ../$(BUILD_DIR)/go-winres github.com/tc-hib/go-winres
+	cd tools && $(HOST_GO) build -o ../$(BUILD_DIR)/go-winres github.com/tc-hib/go-winres
 
 .PHONY: bundle
 bundle: $(BUNDLE) ## Zip the exe with SimConnect.dll from the MSFS SDK (needs msiextract)
 
+# The entries get the commit's time, so the same commit gives the same zip.
 $(BUNDLE): $(BINARY) $(SDK_DIR)/SimConnect.dll LICENSE NOTICE.md
-	rm -rf $(BUILD_DIR)/bundle $@
-	mkdir -p $(BUILD_DIR)/bundle
-	cp $(BINARY) $(SDK_DIR)/SimConnect.dll "$(SDK_DIR)/MSFS SDK EULA.pdf" LICENSE NOTICE.md \
-		$(BUILD_DIR)/bundle/
-	cd $(BUILD_DIR)/bundle && python3 -m zipfile -c ../$(notdir $@) *
+	$(HOST_GO) run ./internal/zipfiles $@ "$$(git log -1 --format=%ct 2>/dev/null || echo 0)" \
+		$(BINARY) $(SDK_DIR)/SimConnect.dll "$(SDK_DIR)/MSFS SDK EULA.pdf" LICENSE NOTICE.md
 
 # The SDK installer is an MSI with external cabinets; msiextract unpacks
 # all of it, of which two files are kept.
 # The download is kept on a checksum mismatch, so that a bump needs it once.
 $(SDK_DIR)/SimConnect.dll:
-	@for tool in curl unzip msiextract python3; do \
+	@for tool in curl unzip msiextract; do \
 		command -v $$tool >/dev/null || { echo "ERROR: make bundle needs $$tool" >&2; exit 1; }; \
 	done
 	rm -rf $(SDK_DIR)/msi $(SDK_DIR)/files
@@ -141,8 +142,10 @@ $(SDK_DIR)/SimConnect.dll:
 	rm -rf $(SDK_DIR)/msi $(SDK_DIR)/files $(SDK_DIR)/sdk.zip
 
 .PHONY: verify-version
+# A host build with the same -X: go version -m can't check the exe itself,
+# since -trimpath leaves -ldflags out of its build info.
 verify-version: ## Verify that -ldflags still sets the version
-	$(GO) run -ldflags "-X main.version=verify" ./cmd/skydemon-connect -version | \
+	$(HOST_GO) run -ldflags "-X main.version=verify" ./cmd/skydemon-connect -version | \
 		grep -qx 'SkyDemonConnect verify'
 
 # The race detector needs cgo and a C compiler; RACE= turns it off.
@@ -155,7 +158,7 @@ test: ## Run the tests with the race detector and coverage
 
 .PHONY: demo
 demo: ## Run a demo flight on this machine (console, port 49002)
-	$(GO) run ./cmd/skydemon-connect -demo -console
+	$(HOST_GO) run ./cmd/skydemon-connect -demo -console
 
 .PHONY: lint
 lint: $(filter $(BUILD_DIR)/%,$(GOLANGCI_LINT)) ## Run golangci-lint for the host and for Windows
@@ -175,18 +178,21 @@ $(BUILD_DIR)/golangci-lint-$(GOLANGCI_LINT_VERSION):
 	rm $(BUILD_DIR)/golangci-lint.tar.gz
 
 .PHONY: govulncheck
-govulncheck: $(BUILD_DIR)/govulncheck ## Check the release build for known vulnerabilities
+govulncheck: $(BUILD_DIR)/govulncheck $(BUILD_DIR)/go-winres ## Check the release build and its tools for known vulnerabilities
 	GOOS=windows $(BUILD_DIR)/govulncheck ./...
+	$(BUILD_DIR)/govulncheck -mode=binary $(BUILD_DIR)/go-winres
 
 # Built for the host: go tool would build it for GOOS=windows.
 $(BUILD_DIR)/govulncheck: tools/go.mod tools/go.sum
 	@mkdir -p $(BUILD_DIR)
-	cd tools && $(GO) build -o ../$(BUILD_DIR)/govulncheck golang.org/x/vuln/cmd/govulncheck
+	cd tools && $(HOST_GO) build -o ../$(BUILD_DIR)/govulncheck golang.org/x/vuln/cmd/govulncheck
 
 .PHONY: verify-tidy
-verify-tidy: ## Verify go.mod and tools/go.mod are tidy
+verify-tidy: ## Verify go.mod and tools/go.mod are tidy and pin the same Go
 	$(GO) mod tidy -diff
 	cd tools && $(GO) mod tidy -diff
+	@[ "$$(grep '^toolchain ' go.mod)" = "$$(grep '^toolchain ' tools/go.mod)" ] || \
+		{ echo "ERROR: go.mod and tools/go.mod pin different toolchains" >&2; exit 1; }
 
 .PHONY: clean
 clean: ## Remove build output

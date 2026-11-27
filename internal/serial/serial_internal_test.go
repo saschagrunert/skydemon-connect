@@ -399,6 +399,64 @@ func TestCloseCancelsAgain(t *testing.T) {
 	})
 }
 
+// slowPort's write takes exactly cancelRetry and ignores cancels, so that
+// the write returning and Close's next cancel are due at the same moment.
+type slowPort struct {
+	mu     sync.Mutex
+	closed bool
+}
+
+func (p *slowPort) Write(b []byte) (int, error) {
+	time.Sleep(cancelRetry)
+
+	return len(b), nil
+}
+
+func (p *slowPort) Close() error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	p.closed = true
+
+	return nil
+}
+
+// A cancel never comes after the write returned and closed the handle:
+// Windows reuses handle values, so it could cancel another handle's I/O.
+func TestNoCancelAfterClose(t *testing.T) {
+	t.Parallel()
+
+	for range 200 {
+		synctest.Test(t, func(t *testing.T) {
+			p := &slowPort{}
+			c := &idleCloser{port: p, cancel: func() {
+				p.mu.Lock()
+				defer p.mu.Unlock()
+
+				if p.closed {
+					t.Error("cancel after the port was closed")
+				}
+			}}
+
+			done := make(chan struct{})
+
+			go func() {
+				defer close(done)
+
+				_, _ = c.Write([]byte("abc"))
+			}()
+
+			synctest.Wait() // the write is in progress
+
+			_ = c.Close()
+
+			<-done
+			time.Sleep(2 * cancelRetry)
+			synctest.Wait()
+		})
+	}
+}
+
 func TestIdleCloserClosesWhenIdle(t *testing.T) {
 	t.Parallel()
 

@@ -1,0 +1,5 @@
+# Test helpers and build tools, not the app.
+ignore:
+  - internal/testutil
+  - internal/icon/genpng
+  - internal/zipfiles

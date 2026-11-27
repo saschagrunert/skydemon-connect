@@ -45,3 +45,14 @@ func TestAnglesWrapAndHaveNoNegativeZero(t *testing.T) {
 		t.Errorf("XATT = %q, want %q", got, want)
 	}
 }
+
+// Values that round to zero print as zero, and a speed is never negative.
+func TestXGPSNoNegativeZero(t *testing.T) {
+	t.Parallel()
+
+	s := position.Sample{Lat: -0.0000001, Lon: 12, AltM: -0.01, GSKnots: -0.001}
+
+	if got, want := foreflight.XGPS("T", s), "XGPST,12.000000,0.000000,0.0,0.00,0.00"; got != want {
+		t.Errorf("XGPS = %q, want %q", got, want)
+	}
+}

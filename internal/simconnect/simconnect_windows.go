@@ -45,8 +45,8 @@ type api struct {
 }
 
 // dllCandidates are the places SimConnect.dll is looked for, in order:
-// exeDir (where the exe is), the SDK folders the environment names, and
-// the SDK's default folders. All are absolute, as LoadLibraryEx requires.
+// exeDir (where the exe is) and the SDK folders the environment names.
+// All are absolute, as LoadLibraryEx requires.
 func dllCandidates(exeDir string, getenv func(string) string) []string {
 	var c []string
 
@@ -60,10 +60,10 @@ func dllCandidates(exeDir string, getenv func(string) string) []string {
 		}
 	}
 
-	return append(c,
-		`C:\MSFS 2024 SDK\SimConnect SDK\lib\SimConnect.dll`,
-		`C:\MSFS SDK\SimConnect SDK\lib\SimConnect.dll`,
-	)
+	// No fallbacks in folders directly under C:\, such as the SDK's
+	// default C:\MSFS 2024 SDK: other users of the PC can put files there,
+	// and an elevated MSFS would start us, and load their DLL, as admin.
+	return c
 }
 
 // exeDir is the folder of the running exe, or "" if unknown.

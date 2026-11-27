@@ -16,6 +16,10 @@ import (
 type Handlers struct {
 	// Update receives every sim frame's aircraft state.
 	Update func(position.Sample)
+	// Connected is called with each change of whether a session is
+	// connected to MSFS, in a flight or not, so that the UI can tell "MSFS
+	// not running" from "in its menu". It starts as false.
+	Connected func(connected bool)
 	// Live is called with each change of whether the sim is live:
 	// connected and, as its Sim event reports, in a flight rather than in
 	// a menu or loading. It starts as false, so the first call is
@@ -134,19 +138,36 @@ const (
 	numVars
 )
 
+// minTrackSpeedKnots: below this ground speed the velocity vector is mostly
+// noise, so the heading stands in for the track.
+const minTrackSpeedKnots = 2.0
+
 // toSample converts the raw sim variables to a Sample in output
-// conventions (pitch up and roll right positive).
+// conventions (pitch up and roll right positive). GROUND VELOCITY can come
+// out a hair below zero when standing; a speed is never negative.
 func toSample(v *[numVars]float64) position.Sample {
 	heading := position.Norm360(v[varHeading])
+	speed := math.Abs(v[varGS])
 
 	return position.Sample{
 		Lat:         v[varLat],
 		Lon:         v[varLon],
 		AltM:        v[varAlt],
-		GSKnots:     v[varGS],
-		TrackTrue:   position.TrackFromVelocity(v[varVelEast], v[varVelNorth], v[varGS], heading),
+		GSKnots:     speed,
+		TrackTrue:   trackFromVelocity(v[varVelEast], v[varVelNorth], speed, heading),
 		HeadingTrue: heading,
 		Pitch:       -v[varPitch],
 		Roll:        -v[varBank],
 	}
+}
+
+// trackFromVelocity returns the true ground track in degrees from the world
+// east and north velocity components. Below about 2 kt the track is noise,
+// so headingTrue is returned instead.
+func trackFromVelocity(east, north, gsKnots, headingTrue float64) float64 {
+	if gsKnots < minTrackSpeedKnots {
+		return position.Norm360(headingTrue)
+	}
+
+	return position.Norm360(math.Atan2(east, north) * position.DegPerRad)
 }

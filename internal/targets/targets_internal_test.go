@@ -6,8 +6,11 @@ import (
 	"log"
 	"net"
 	"net/netip"
+	"slices"
 	"strings"
 	"testing"
+	"testing/synctest"
+	"time"
 
 	"github.com/saschagrunert/skydemon-connect/internal/testutil"
 )
@@ -170,5 +173,54 @@ func TestResolveCancelled(t *testing.T) {
 
 	if got := s.Resolve(ctx); len(got) != 0 || logs.String() != "" {
 		t.Errorf("resolve %v, log %q", got, logs.String())
+	}
+}
+
+// Host names are looked up in parallel: two that take the whole timeout
+// together take it once.
+func TestResolveParallel(t *testing.T) {
+	t.Parallel()
+
+	synctest.Test(t, func(t *testing.T) {
+		spec, err := Parse("a.local:1,b.local:2,192.0.2.1:3", 49002)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		r := spec.Resolver(testutil.Log(t))
+		r.lookup = func(context.Context, string) ([]netip.Addr, error) {
+			time.Sleep(lookupTimeout)
+
+			return []netip.Addr{netip.MustParseAddr("192.0.2.9")}, nil
+		}
+
+		if got := r.Known().String(); got != "192.0.2.1:3" {
+			t.Errorf("known before any lookup: %s", got)
+		}
+
+		start := time.Now()
+		got := r.Resolve(t.Context())
+
+		if d := time.Since(start); d != lookupTimeout {
+			t.Errorf("two lookups took %v, want %v", d, lookupTimeout)
+		}
+
+		if got.String() != "192.0.2.1:3, 192.0.2.9:1, 192.0.2.9:2" {
+			t.Errorf("resolve: %s", got)
+		}
+	})
+}
+
+// The real lookup, with a name every system resolves.
+func TestLookupIPv4(t *testing.T) {
+	t.Parallel()
+
+	addrs, err := lookupIPv4(t.Context(), "localhost")
+	if err != nil {
+		t.Skipf("no localhost on this system: %v", err)
+	}
+
+	if !slices.ContainsFunc(addrs, func(a netip.Addr) bool { return a.Unmap().IsLoopback() }) {
+		t.Errorf("localhost: %v", addrs)
 	}
 }

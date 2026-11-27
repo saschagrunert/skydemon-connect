@@ -1,6 +1,9 @@
 package tray
 
 import (
+	"strings"
+
+	"github.com/saschagrunert/skydemon-connect/internal/exexml"
 	"github.com/saschagrunert/skydemon-connect/internal/feed"
 	"github.com/saschagrunert/skydemon-connect/internal/icon"
 )
@@ -63,6 +66,7 @@ const (
 	addedTitle   = "Starts with MSFS"
 	addedText    = "From the next MSFS start, MSFS launches it and it quits when MSFS closes. " +
 		"Keep the exe in this folder."
+	addedArgs    = "Options: "
 	removedTitle = "No longer starts with MSFS"
 	removedText  = "MSFS no longer launches SkyDemonConnect."
 	// noLogText is shown for Open log when no folder took the log.
@@ -77,15 +81,63 @@ type menuItem struct {
 	separator bool
 }
 
+// Start with MSFS menu texts.
+const (
+	startText = "Start with MSFS"
+	// otherText: an entry exists for another copy or other options, or is
+	// disabled; clicking replaces it with this copy's.
+	otherText = "Start with MSFS (another or disabled entry)"
+	// noExeText: without the exe's own path, there is nothing to write.
+	noExeText = "Start with MSFS (exe path unknown)"
+)
+
+// menuState is what the tray menu shows.
+type menuState struct {
+	version, status string
+	// destinations are where positions go, e.g. "UDP: 127.0.0.1".
+	destinations []string
+	msfs         exexml.State
+	// canStart: the exe's path is known, so Start with MSFS can work.
+	canStart bool
+}
+
 // menu returns the tray menu.
-func menu(version, status string, msfs bool) []menuItem {
-	return []menuItem{
-		{text: "SkyDemonConnect " + version},
-		{text: status},
-		{separator: true},
-		{text: "Start with MSFS", id: idMSFS, checked: msfs},
-		{text: "Open log", id: idLog},
-		{separator: true},
-		{text: "Quit", id: idQuit},
+func menu(s *menuState) []menuItem {
+	items := []menuItem{
+		{text: "SkyDemonConnect " + s.version},
+		{text: s.status},
 	}
+
+	for _, d := range s.destinations {
+		items = append(items, menuItem{text: d})
+	}
+
+	start := menuItem{text: startText, id: idMSFS, checked: s.msfs == exexml.Ours}
+
+	switch {
+	case !s.canStart:
+		start = menuItem{text: noExeText}
+	case s.msfs == exexml.Other:
+		start.text = otherText
+	}
+
+	return append(items,
+		menuItem{separator: true},
+		start,
+		menuItem{text: "Open log", id: idLog},
+		menuItem{separator: true},
+		menuItem{text: "Quit", id: idQuit},
+	)
+}
+
+// addedMessage is the balloon text after Start with MSFS wrote args to
+// exe.xml: they replace whatever an entry there had, so they are shown,
+// first, so that the balloon's length limit cuts the general text instead.
+func addedMessage(args []string) string {
+	opts := "none"
+	if len(args) > 0 {
+		opts = strings.Join(args, " ")
+	}
+
+	return addedArgs + opts + ". " + addedText
 }

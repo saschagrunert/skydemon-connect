@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -94,6 +95,8 @@ func (c *fakeConn) close() { c.closed = true }
 type recorder struct {
 	mu     sync.Mutex
 	events []string
+	// connected records the Connected calls, apart from events.
+	connected []bool
 }
 
 func (r *recorder) String() string {
@@ -118,6 +121,11 @@ func (r *recorder) handlers() Handlers {
 			} else {
 				r.add("dead")
 			}
+		},
+		Connected: func(c bool) {
+			r.mu.Lock()
+			r.connected = append(r.connected, c)
+			r.mu.Unlock()
 		},
 		Ended: func() { r.add("ended") },
 		Failed: func(err error) {
@@ -385,6 +393,64 @@ func TestLoopSetupFixedOnOpen(t *testing.T) {
 	if got != want {
 		t.Errorf("events %q, want %q", got, want)
 	}
+}
+
+// The setup calls after connecting fail like the sim going away: logged,
+// and retried, without a live session.
+func TestLoopSetupCallErrors(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		conn *fakeConn
+		want string
+	}{
+		{&fakeConn{subscribeErr: errFake}, "subscribe Sim: fake"},
+		{&fakeConn{failRequestFrom: 1}, "request data: fake"},
+	} {
+		got, _, out := runLoop(t, tc.conn)
+		if !strings.Contains(out, tc.want) || strings.Contains(got, "live") {
+			t.Errorf("events %q, log %q, want %q", got, out, tc.want)
+		}
+	}
+}
+
+// Connected follows the session, apart from whether a flight runs: true at
+// OPEN, also in the menu, and false when the session ends.
+func TestLoopConnected(t *testing.T) {
+	t.Parallel()
+
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
+		r := &recorder{}
+		conns := []*fakeConn{
+			{msgs: [][]byte{msgEvent(eventSim, 0), msgOpen(), msgQuit()}}, // in the menu
+			{}, // no answer
+		}
+		n := 0
+		open := func(string) (conn, error) {
+			if n == len(conns) {
+				cancel()
+
+				return nil, errFake
+			}
+
+			n++
+
+			return conns[n-1], nil
+		}
+
+		loop(ctx, testutil.Log(t), open, r.handlers())
+
+		events := r.String()
+
+		r.mu.Lock()
+		connected := slices.Clone(r.connected)
+		r.mu.Unlock()
+
+		if !slices.Equal(connected, []bool{true, false}) || strings.Contains(events, "live") {
+			t.Errorf("connected %v, events %q", connected, events)
+		}
+	})
 }
 
 func TestLoopExceptionsLoggedOnce(t *testing.T) {

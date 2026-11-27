@@ -14,11 +14,19 @@ defaults:
     shell: bash
 
 jobs:
-  # Only commits on main are released.
-  on-main:
+  # Only commits on main are released, and only tags that are a version:
+  # the tag name ends up in make variables and file names.
+  check:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
+      - env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]]; then
+            echo "::error::not a version tag: $TAG"
+            exit 1
+          fi
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -27,19 +35,17 @@ jobs:
 
   # Everything ci runs for a pull request, with read-only permissions.
   ci:
-    needs: on-main
+    needs: check
     uses: ./.github/workflows/ci.yml
     secrets:
       CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
 
-  release:
+  # The zip is built without write permissions: the build runs go-winres,
+  # msitools and the SDK installer's contents.
+  build:
     needs: ci
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    permissions:
-      contents: write # create the release and upload its assets
-      id-token: write # sign the build provenance
-      attestations: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -52,6 +58,30 @@ jobs:
       - run: sudo apt-get update -q && sudo apt-get install -y --no-install-recommends msitools
       - run: make bundle VERSION="$GITHUB_REF_NAME"
       - run: cd build && sha256sum SkyDemonConnect-*.zip > SHA256SUMS
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release
+          path: |
+            build/SkyDemonConnect-*.zip
+            build/SkyDemonConnect.exe
+            build/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 7
+
+  # Attests and publishes what build made; runs no build tools.
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write # create the release and upload its assets
+      id-token: write # sign the build provenance
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release
+          path: build
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: |

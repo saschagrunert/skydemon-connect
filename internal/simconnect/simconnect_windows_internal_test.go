@@ -20,15 +20,14 @@ func TestDLLCandidates(t *testing.T) {
 	want := []string{
 		`C:\Tools\SkyDemonConnect\SimConnect.dll`,
 		`D:\SDK 2024\SimConnect SDK\lib\SimConnect.dll`,
-		`C:\MSFS 2024 SDK\SimConnect SDK\lib\SimConnect.dll`,
-		`C:\MSFS SDK\SimConnect SDK\lib\SimConnect.dll`,
 	}
 	if !slices.Equal(c, want) {
 		t.Errorf("candidates %q, want %q", c, want)
 	}
 
-	// Without a usable exe folder, the SDK folders remain.
-	if c := dllCandidates("", func(string) string { return "" }); len(c) != 2 {
+	// Without a usable exe folder or SDK variable, there is none: nothing
+	// under C:\ that other users could have put there.
+	if c := dllCandidates("", func(string) string { return "" }); len(c) != 0 {
 		t.Errorf("candidates %q", c)
 	}
 }
@@ -97,5 +96,39 @@ func TestProcsExist(t *testing.T) {
 		if err != nil {
 			t.Errorf("%s: %v", p.Name, err)
 		}
+	}
+}
+
+// The real SimConnect.dll, which CI's weekly bundle job takes from the MSFS
+// SDK and names in SKYDEMONCONNECT_SIMCONNECT_DLL: every function the app
+// uses is bound, and without MSFS an open fails with the error the app
+// takes for "MSFS isn't running". Skipped without the variable.
+func TestRealDLL(t *testing.T) {
+	t.Parallel()
+
+	path := os.Getenv("SKYDEMONCONNECT_SIMCONNECT_DLL")
+	if path == "" {
+		t.Skip("SKYDEMONCONNECT_SIMCONNECT_DLL not set")
+	}
+
+	dll, err := loadDLL([]string{path})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	a, err := bind(dll)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	c, err := a.open("SkyDemonConnect test")
+	if err == nil {
+		c.close()
+		t.Fatal("open worked without MSFS")
+	}
+
+	// errNoSim (E_FAIL) is what the app takes for "MSFS isn't running".
+	if !errors.Is(err, errNoSim) {
+		t.Errorf("open without MSFS: %v, want %v", err, errNoSim)
 	}
 }

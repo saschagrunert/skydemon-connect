@@ -20,6 +20,7 @@ import (
 	"github.com/saschagrunert/skydemon-connect/internal/exexml"
 	"github.com/saschagrunert/skydemon-connect/internal/feed"
 	"github.com/saschagrunert/skydemon-connect/internal/icon"
+	"github.com/saschagrunert/skydemon-connect/internal/testutil"
 )
 
 func TestCopyUTF16(t *testing.T) {
@@ -83,9 +84,10 @@ func TestProcsExist(t *testing.T) {
 		procCreatePopupMenu, procAppendMenuW, procTrackPopupMenu, procDestroyMenu,
 		procSetForegroundWindow, procGetCursorPos, procSetTimer, procMessageBoxW,
 		procCreateIconIndirect, procGetSystemMetrics, procRegisterWindowMessageW,
-		procSetProcessDPIAware, procShellNotifyIconW, procShellExecuteW, procCreateDIBSection,
+		procGetDpiForWindow, procGetSystemMetricsForDpi, procDestroyIcon,
+		procShellNotifyIconW, procShellExecuteW, procCreateDIBSection,
 		procCreateBitmap, procDeleteObject, procChangeWindowMsgFilter, procGetModuleHandleW,
-		procCreateMutexW, procAllocConsole,
+		procCreateMutexW, procAllocConsole, procCoInitializeEx,
 	} {
 		err := p.Find()
 		if err != nil {
@@ -116,7 +118,7 @@ func TestTooltipBudget(t *testing.T) {
 	room := len(notifyIconData{}.Tip) - 1 // the NUL
 
 	st := feed.Status{Kind: feed.Failed, Err: strings.Repeat("x", feed.MaxErrLen)}
-	if n := len(tooltipTitle + st.String()); n != room {
+	if n := len(feed.TooltipTitle + st.String()); n != room {
 		t.Errorf("a %d-character error makes a %d-character tooltip, room for %d",
 			feed.MaxErrLen, n, room)
 	}
@@ -131,19 +133,33 @@ func TestToggleMSFS(t *testing.T) {
 		opts: Options{
 			ExePath:  `C:\Tools\SkyDemonConnect\SkyDemonConnect.exe`,
 			MSFS:     installs,
-			AutoArgs: []string{"-udp=auto,192.168.1.23:49002"},
-			Log:      log.New(t.Output(), "", 0),
+			AutoArgs: []string{"-udp=auto,192.168.1.23:49002", "-name=My Sim"},
+			Log:      testutil.Log(t),
 		},
 		// A message box would wait for a click that never comes.
 		showError: func(text string) { t.Error(text) },
 	}
 
-	for _, want := range []bool{true, false, true} {
+	for _, want := range []exexml.State{exexml.Ours, exexml.Absent, exexml.Ours} {
 		clicked.toggleMSFS()
 
-		if got := installs.Enabled(clicked.opts.ExePath, clicked.opts.AutoArgs); got != want {
-			t.Fatalf("after a click: enabled %v, want %v", got, want)
+		if got := installs.State(clicked.opts.ExePath, clicked.opts.AutoArgs); got != want {
+			t.Fatalf("after a click: %v, want %v", got, want)
 		}
+	}
+
+	// Another copy's entry: a click replaces it with this copy's.
+	moved := *clicked
+	moved.opts.ExePath = `C:\Moved\SkyDemonConnect.exe`
+
+	if got := installs.State(moved.opts.ExePath, moved.opts.AutoArgs); got != exexml.Other {
+		t.Fatalf("another copy's entry: %v", got)
+	}
+
+	moved.toggleMSFS()
+
+	if got := installs.State(moved.opts.ExePath, moved.opts.AutoArgs); got != exexml.Ours {
+		t.Errorf("after replacing: %v", got)
 	}
 }
 
@@ -153,22 +169,6 @@ func TestToggleMSFS(t *testing.T) {
 // only run once per process, so this is the one test of it.
 func TestRun(t *testing.T) {
 	t.Parallel()
-
-	var ended atomic.Int32
-
-	done := make(chan error, 1)
-
-	go func() {
-		done <- Run(&Options{
-			Feed:       feed.New(feed.Outputs{}, log.New(t.Output(), "", 0)),
-			Quit:       make(chan struct{}), // never closed
-			Version:    "test",
-			ExePath:    `C:\x.exe`,
-			SessionEnd: func() { ended.Add(1) },
-			Log:        log.New(t.Output(), "", 0),
-			Auto:       true,
-		})
-	}()
 
 	findWindow, sendMessage := user32.NewProc("FindWindowW"), user32.NewProc("SendMessageW")
 	class := utf16Ptr(className)
@@ -180,6 +180,36 @@ func TestRun(t *testing.T) {
 
 		return int(pid) == os.Getpid()
 	}
+
+	// A running copy of the app mustn't get the messages; checked before
+	// Run, so that no Run goroutine outlives the skipped test.
+	if hwnd, _, _ := findWindow.Call(uintptr(unsafe.Pointer(class)), 0); hwnd != 0 {
+		t.Skip("SkyDemonConnect is running on this PC")
+	}
+
+	// Run may still log after a failed test ended, where t.Output can't
+	// be written to: the log goes to a buffer, shown at the end.
+	var logs testutil.Buffer
+
+	t.Cleanup(func() { t.Log(logs.String()) })
+
+	l := log.New(&logs, "", 0)
+
+	var ended atomic.Int32
+
+	done := make(chan error, 1)
+
+	go func() {
+		done <- Run(&Options{
+			Feed:       feed.New(feed.Outputs{}, l),
+			Quit:       make(chan struct{}), // never closed
+			Version:    "test",
+			ExePath:    `C:\x.exe`,
+			SessionEnd: func() { ended.Add(1) },
+			Log:        l,
+			Auto:       true,
+		})
+	}()
 
 	var hwnd uintptr
 
@@ -198,8 +228,7 @@ func TestRun(t *testing.T) {
 
 		hwnd, _, _ = findWindow.Call(uintptr(unsafe.Pointer(class)), 0)
 		if hwnd != 0 && !ours(hwnd) {
-			// A running copy of the app, which mustn't get the messages.
-			t.Skip("SkyDemonConnect is running on this PC")
+			t.Fatal("another tray window appeared")
 		}
 	}
 
