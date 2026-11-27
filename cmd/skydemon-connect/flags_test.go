@@ -69,6 +69,8 @@ func TestParseFlagsValidates(t *testing.T) {
 		{errDemoLon, []string{"-demo", "-demo-lon", "-181"}},
 		{errDemoPlace, []string{"-demo-lat", "50"}},
 		{errDemoPlace, []string{"-demo-lon", "10"}},
+		{errTestTraffic, []string{"-test-traffic", "-no-traffic"}},
+		{errTrafficUDP, []string{"-test-traffic", "-udp=", "-com", "COM11"}},
 	} {
 		_, usage, err := parseFlags(tc.args)
 		if !errors.Is(err, tc.want) ||
@@ -141,11 +143,18 @@ func flags(t *testing.T, args ...string) *config {
 func TestPassOn(t *testing.T) {
 	t.Parallel()
 
-	c := flags(t, "-auto", "-console", "-demo", "-udp", "auto,192.168.1.23:49002",
+	c := flags(t, "-auto", "-console", "-demo", "-test-traffic", "-udp", "auto,192.168.1.23:49002",
 		"-name", `My "Sim"`, "-com=COM11", "-baud", "115200")
 
 	// Raw, unquoted; -baud at its default is left out.
 	want := []string{`-com=COM11`, `-name=My "Sim"`, `-udp=auto,192.168.1.23:49002`}
+	if !slices.Equal(c.passOn, want) {
+		t.Errorf("passOn %q, want %q", c.passOn, want)
+	}
+
+	c = flags(t, "-no-traffic")
+
+	want = []string{`-no-traffic=true`}
 	if !slices.Equal(c.passOn, want) {
 		t.Errorf("passOn %q, want %q", c.passOn, want)
 	}

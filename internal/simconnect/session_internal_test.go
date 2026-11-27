@@ -42,12 +42,16 @@ func msgException(code byte) []byte {
 }
 
 // fakeConn replays queued messages; requestData fails from the nth call
-// on when failRequestFrom is set, and calls onRequest when set. Its wait
-// sleeps, which in a synctest bubble takes no real time.
+// on when failRequestFrom is set, and calls onRequest when set. Traffic
+// requests call onTraffic, which can queue the answer. Its wait sleeps,
+// which in a synctest bubble takes no real time.
 type fakeConn struct {
 	defineErr       error
 	subscribeErr    error
+	trafficErr      error
+	requestErr      error
 	onRequest       func(n int)
+	onTraffic       func(c *fakeConn, request, objectType, radius uint32)
 	msgs            [][]byte
 	events          []string
 	failRequestFrom int
@@ -56,6 +60,16 @@ type fakeConn struct {
 }
 
 func (c *fakeConn) addToDataDefinition(string, string) error { return c.defineErr }
+
+func (c *fakeConn) addTrafficVar(string, string, uint32) error { return c.trafficErr }
+
+func (c *fakeConn) requestTraffic(request, objectType, radius uint32) error {
+	if c.onTraffic != nil {
+		c.onTraffic(c, request, objectType, radius)
+	}
+
+	return c.requestErr
+}
 
 func (c *fakeConn) subscribe(id uint32, name string) error {
 	c.events = append(c.events, fmt.Sprintf("%s=%d", name, id))

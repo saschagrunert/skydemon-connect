@@ -14,6 +14,9 @@ const (
 	recvQuit          = 3
 	recvEvent         = 4
 	recvSimobjectData = 8
+	// recvSimobjectDataByType answers a request by object type, laid out
+	// as recvSimobjectData.
+	recvSimobjectDataByType = 9
 
 	recvHeaderSize = 12 // SIMCONNECT_RECV: dwSize, dwVersion, dwID
 	recvIDOffset   = 8
@@ -76,9 +79,13 @@ type dispatcher struct {
 	// main menu, loading or the Esc menu. The first Sim event can come
 	// before OPEN.
 	stopped bool
+	// traffic collects the answers to traffic requests.
+	traffic trafficState
 	// badData is set once a data block that doesn't match the definition
 	// was logged: it repeats every frame.
 	badData bool
+	// badTraffic is badData for the traffic definition.
+	badTraffic bool
 }
 
 // handle processes one message and reports whether the sim quit.
@@ -108,6 +115,8 @@ func (d *dispatcher) handle(buf []byte) bool {
 		d.exception(buf)
 	case recvSimobjectData:
 		d.data(buf)
+	case recvSimobjectDataByType:
+		d.trafficData(buf)
 	}
 
 	return false

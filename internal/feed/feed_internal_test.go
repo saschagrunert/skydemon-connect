@@ -693,3 +693,150 @@ func TestSendMovesPositionOn(t *testing.T) {
 		})
 	}
 }
+
+// Traffic goes to every UDP target once a second, only while positions
+// are sent.
+func TestRunSendsTraffic(t *testing.T) {
+	t.Parallel()
+
+	synctest.Test(t, func(t *testing.T) {
+		u := &fakeUDP{}
+		f, _ := newFeed(Outputs{UDP: u, Name: "T", NoAttitude: true})
+		f.SetTargets([]netip.AddrPort{target(1), target(2)})
+		f.SetTraffic([]position.Traffic{{Callsign: "A", ICAO: 1}, {Callsign: "B", ICAO: 2}})
+		f.Update(flying())
+
+		ctx, cancel := context.WithCancel(t.Context())
+		done := make(chan struct{})
+
+		go func() {
+			defer close(done)
+
+			f.Run(ctx)
+		}()
+
+		traffic := func(dest netip.AddrPort) int {
+			return strings.Count(strings.Join(u.kinds(dest), ","), "XTRA")
+		}
+
+		// A position, but not live: nothing is sent.
+		time.Sleep(time.Second + time.Millisecond)
+		synctest.Wait()
+
+		if n := traffic(target(1)); n != 0 {
+			t.Errorf("not live: %d XTRAFFIC", n)
+		}
+
+		// SetLive drops the position from before.
+		f.SetLive(true)
+		f.Update(flying())
+		time.Sleep(2 * time.Second)
+		synctest.Wait()
+
+		for _, to := range []netip.AddrPort{target(1), target(2)} {
+			if n := traffic(to); n != 4 {
+				t.Errorf("to %v: %d XTRAFFIC in two seconds, want 4", to, n)
+			}
+		}
+
+		cancel()
+		<-done
+	})
+}
+
+// A TrafficFunc gets the position being sent, and is only called while
+// positions are.
+func TestRunTrafficFunc(t *testing.T) {
+	t.Parallel()
+
+	synctest.Test(t, func(t *testing.T) {
+		u := &fakeUDP{}
+		f, _ := newFeed(Outputs{UDP: u, Name: "T", NoAttitude: true})
+		f.SetTargets([]netip.AddrPort{target(1)})
+
+		var (
+			lock sync.Mutex
+			owns []position.Sample
+		)
+
+		f.SetTrafficFunc(func(own position.Sample, _ time.Time) []position.Traffic {
+			lock.Lock()
+			defer lock.Unlock()
+
+			owns = append(owns, own)
+
+			return []position.Traffic{{Callsign: "X", Lat: own.Lat, Lon: own.Lon}}
+		})
+		f.SetTraffic([]position.Traffic{{Callsign: "IGNORED"}})
+
+		ctx, cancel := context.WithCancel(t.Context())
+		done := make(chan struct{})
+
+		go func() {
+			defer close(done)
+
+			f.Run(ctx)
+		}()
+
+		time.Sleep(time.Second + time.Millisecond)
+		synctest.Wait()
+
+		f.SetLive(true)
+		f.Update(flying())
+		time.Sleep(time.Second)
+		synctest.Wait()
+
+		cancel()
+		<-done
+
+		lock.Lock()
+		defer lock.Unlock()
+
+		// Moved on by up to maxAhead, as positions are sent.
+		if len(owns) != 1 || math.Abs(owns[0].Lat-flying().Lat) > 0.001 {
+			t.Errorf("called with %+v, want once with the position sent", owns)
+		}
+
+		for _, p := range u.got {
+			if strings.HasPrefix(p.msg, "XTRAFFIC") && !strings.HasSuffix(p.msg, ",X") {
+				t.Errorf("sent %q", p.msg)
+			}
+		}
+	})
+}
+
+// Of more than MaxTraffic targets, the nearest are sent, also across the
+// antimeridian.
+func TestNearest(t *testing.T) {
+	t.Parallel()
+
+	own := position.Sample{Lat: 0.5, Lon: 179.99}
+
+	traffic := make([]position.Traffic, 0, MaxTraffic+10)
+	for i := range MaxTraffic + 10 {
+		// Further east each, across 180°.
+		lon := own.Lon + float64(i+1)*0.001
+		if lon > 180 {
+			lon -= 360
+		}
+
+		traffic = append(traffic, position.Traffic{ICAO: uint32(i), Lat: own.Lat, Lon: lon})
+	}
+
+	slices.Reverse(traffic)
+
+	got := nearest(own, traffic, MaxTraffic)
+	if len(got) != MaxTraffic {
+		t.Fatalf("%d targets, want %d", len(got), MaxTraffic)
+	}
+
+	for i, x := range got {
+		if x.ICAO != uint32(i) {
+			t.Fatalf("target %d: ICAO %d, want the nearest first", i, x.ICAO)
+		}
+	}
+
+	if few := traffic[:3]; len(nearest(own, few, MaxTraffic)) != 3 {
+		t.Error("fewer than MaxTraffic not all sent")
+	}
+}

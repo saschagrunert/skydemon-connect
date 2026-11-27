@@ -2,6 +2,7 @@ package foreflight_test
 
 import (
 	"math"
+	"strings"
 	"testing"
 
 	"github.com/saschagrunert/skydemon-connect/internal/foreflight"
@@ -54,5 +55,24 @@ func TestXGPSNoNegativeZero(t *testing.T) {
 
 	if got, want := foreflight.XGPS("T", s), "XGPST,12.000000,0.000000,0.0,0.00,0.00"; got != want {
 		t.Errorf("XGPS = %q, want %q", got, want)
+	}
+}
+
+func TestXTRAFFIC(t *testing.T) {
+	t.Parallel()
+
+	target := position.Traffic{
+		ICAO: 168, Lat: 33.85397339, Lon: -118.32486725, AltM: 3749.9 * position.FeetToMeters,
+		VSFpm: -213, Airborne: true, TrackTrue: 68.2, GSKnots: 126, Callsign: "KS6",
+	}
+
+	got := foreflight.XTRAFFIC("My Sim", target)
+	if want := "XTRAFFICMy Sim,168,33.853973,-118.324867,3749.9,-213.0,1,68.20,126.00,KS6"; got != want {
+		t.Errorf("XTRAFFIC = %q, want %q", got, want)
+	}
+
+	target.Airborne = false
+	if got := foreflight.XTRAFFIC("S", target); !strings.Contains(got, ",0,68.20,") {
+		t.Errorf("on the ground: %q", got)
 	}
 }

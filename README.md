@@ -7,7 +7,8 @@ Smooth moving map for [SkyDemon](https://www.skydemon.aero) in Microsoft
 Flight Simulator 2024 (MSFS). Simulator bridges usually send one position
 per second, so the aircraft jumps; SkyDemonConnect sends 30 per second, to
 SkyDemon on the same PC and to tablets and phones on your network. It is a
-single `.exe` in the system tray that can start and stop with MSFS.
+single `.exe` in the system tray that can start and stop with MSFS. Other
+aircraft around you show up as traffic, too.
 
 ## Install
 
@@ -84,8 +85,8 @@ already has the option; leave it alone, as a click removes the entry.
   [Tablets and phones](#tablets-and-phones).
 
 The tray menu, starting with MSFS (and adding it to MSFS's `exe.xml` by
-hand), the demo, all options, updating and uninstalling are described in
-[docs/reference.md](docs/reference.md).
+hand), the demo, traffic, all options, updating and uninstalling are
+described in [docs/reference.md](docs/reference.md).
 
 ## License
 

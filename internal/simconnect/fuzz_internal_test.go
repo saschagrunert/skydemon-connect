@@ -4,6 +4,7 @@ import (
 	"io"
 	"log"
 	"testing"
+	"time"
 
 	"github.com/saschagrunert/skydemon-connect/internal/position"
 )
@@ -14,6 +15,8 @@ func FuzzHandle(f *testing.F) {
 	for _, msg := range [][]byte{
 		msgOpen(), msgQuit(), msgEvent(eventSim, 1), msgEvent(eventSim, 0),
 		msgException(7), goldenData(&testing.T{}),
+		msgTraffic(firstAircraft, 1, 1, 1, trafficBlock(&testing.T{}, trafficFloats(), "X")),
+		msgTraffic(firstHelicopters, 0, 0, 0, nil),
 		{},
 		{1, 2, 3},
 	} {
@@ -29,8 +32,11 @@ func FuzzHandle(f *testing.F) {
 				Connected: func(bool) {},
 				Ended:     func() {},
 				Failed:    func(error) {},
+				Traffic:   func([]position.Traffic) {},
 			},
 		}
+
+		_, _ = d.traffic.due(time.Now(), noAsk)
 
 		// Twice: the second time with whatever state the first left.
 		d.handle(buf)

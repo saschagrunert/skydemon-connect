@@ -115,6 +115,10 @@ func Norm360(deg float64) float64 {
 	return deg
 }
 
+// Norm180 normalises an angle in degrees to [-180, 180), e.g. the
+// difference of two longitudes, also across the antimeridian.
+func Norm180(deg float64) float64 { return Norm360(deg+halfCircle) - halfCircle }
+
 // Round rounds v to decimals places, without negative zero, so that
 // printing it with as many decimals shows neither "-0.0" nor a value
 // different from the rounded one.

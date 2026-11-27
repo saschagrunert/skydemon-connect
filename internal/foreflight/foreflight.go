@@ -55,3 +55,32 @@ func XATT(name string, s position.Sample) string {
 		d, position.Round(s.Pitch, d),
 		d, position.Round(s.Roll, d))
 }
+
+// XTRAFFIC returns a traffic message:
+// XTRAFFIC<name>,icao,lat,lon,alt_ft,vs_fpm,airborne,track_true,speed_kt,callsign.
+func XTRAFFIC(name string, t position.Traffic) string {
+	airborne := 0
+	if t.Airborne {
+		airborne = 1
+	}
+
+	return fmt.Sprintf(
+		"XTRAFFIC%s,%d,%.*f,%.*f,%.*f,%.*f,%d,%.*f,%.*f,%s",
+		name,
+		t.ICAO,
+		coordDecimals,
+		position.Round(t.Lat, coordDecimals),
+		coordDecimals,
+		position.Round(t.Lon, coordDecimals),
+		altDecimals,
+		position.Round(t.AltM/position.FeetToMeters, altDecimals),
+		altDecimals,
+		position.Round(t.VSFpm, altDecimals),
+		airborne,
+		trackDecimals,
+		position.RoundAngle(t.TrackTrue, trackDecimals),
+		speedDecimals,
+		position.Round(t.GSKnots, speedDecimals),
+		t.Callsign,
+	)
+}
