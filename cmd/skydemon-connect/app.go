@@ -153,6 +153,11 @@ func startFeed(parent context.Context, c *config, src input, l *log.Logger) (*ru
 	f := feed.New(outs.Outputs, l)
 	f.SetTargets(outs.targets)
 
+	if c.testTraffic {
+		l.Printf("test traffic: TEST1 to TEST3 around the own aircraft")
+		f.SetTrafficFunc(demo.NewTestTraffic(time.Now()).At)
+	}
+
 	ctx, cancel := context.WithCancel(parent)
 	// quit is done when parent is, or when the feed asks to quit.
 	quit, requestQuit := context.WithCancel(parent)
@@ -214,7 +219,7 @@ func runInput(
 		return
 	}
 
-	src.sim(ctx, l, simconnect.Handlers{
+	h := simconnect.Handlers{
 		Update:    f.Update,
 		Live:      f.SetLive,
 		Connected: f.SetConnected,
@@ -224,8 +229,16 @@ func runInput(
 				quit()
 			}
 		},
-		Failed: f.SetError,
-	})
+		Failed:  f.SetError,
+		Traffic: nil,
+	}
+
+	// -test-traffic replaces the sim's traffic.
+	if !c.noTraffic && !c.testTraffic {
+		h.Traffic = f.SetTraffic
+	}
+
+	src.sim(ctx, l, h)
 }
 
 // insideArchive reports whether dir is where an archiver runs an exe opened

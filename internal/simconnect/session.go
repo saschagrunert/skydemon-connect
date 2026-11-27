@@ -7,6 +7,7 @@ import (
 	"log"
 	"time"
 
+	"github.com/saschagrunert/skydemon-connect/internal/position"
 	"github.com/saschagrunert/skydemon-connect/internal/report"
 )
 
@@ -41,6 +42,11 @@ var (
 // the tests.
 type conn interface {
 	addToDataDefinition(name, unit string) error
+	// addTrafficVar adds a variable to the traffic definition.
+	addTrafficVar(name, unit string, datatype uint32) error
+	// requestTraffic asks once for the objects of objectType within
+	// radius metres, answered with request.
+	requestTraffic(request, objectType, radius uint32) error
 	// subscribe asks for the system event name, sent with the event ID.
 	subscribe(event uint32, name string) error
 	requestData() error
@@ -67,6 +73,8 @@ type looper struct {
 	// live and connected are the states last passed to Live and
 	// Connected.
 	live, connected bool
+	// traffic is whether the traffic last passed to Traffic had any.
+	traffic bool
 }
 
 // loop connects to the sim and reconnects until ctx is done. Errors are
@@ -80,6 +88,7 @@ func loop(ctx context.Context, l *log.Logger, open opener, h Handlers) {
 
 		state.setLive(false)
 		state.setConnected(false)
+		state.clearTraffic()
 
 		if ctx.Err() != nil {
 			return
@@ -100,7 +109,24 @@ func (lp *looper) handlers() Handlers {
 	h := lp.h
 	h.Live, h.Connected = lp.setLive, lp.setConnected
 
+	if h.Traffic != nil {
+		h.Traffic = lp.setTraffic
+	}
+
 	return h
+}
+
+func (lp *looper) setTraffic(t []position.Traffic) {
+	lp.traffic = len(t) > 0
+	lp.h.Traffic(t)
+}
+
+// clearTraffic tells Traffic that the session's traffic is gone, if it
+// had any.
+func (lp *looper) clearTraffic() {
+	if lp.traffic {
+		lp.setTraffic(nil)
+	}
 }
 
 // openConn opens a connection. A setup problem is solved once one opens:
@@ -210,7 +236,50 @@ func session(ctx context.Context, l *log.Logger, open opener, h Handlers) (bool,
 		return false, fmt.Errorf("request data: %w", err)
 	}
 
+	if h.Traffic != nil {
+		err = defineTraffic(c)
+		if err != nil {
+			// Positions matter more: go on without traffic.
+			l.Printf("simconnect: no traffic: %v", err)
+
+			h.Traffic = nil
+		}
+	}
+
 	return dispatch(ctx, c, &dispatcher{log: l, h: h})
+}
+
+// defineTraffic sets up the traffic definition.
+func defineTraffic(c conn) error {
+	for _, v := range trafficVars() {
+		err := c.addTrafficVar(v.name, v.unit, v.datatype)
+		if err != nil {
+			return fmt.Errorf("add %s: %w", v.name, err)
+		}
+	}
+
+	return nil
+}
+
+// trafficTick asks for traffic when it is time to, while connected.
+func trafficTick(c conn, d *dispatcher, now time.Time) error {
+	if d.h.Traffic == nil || !d.connected {
+		return nil
+	}
+
+	changed, err := d.traffic.due(now, func(id, objectType uint32) error {
+		return c.requestTraffic(id, objectType, trafficRadiusM)
+	})
+
+	if changed {
+		d.h.Traffic(d.traffic.all())
+	}
+
+	if err != nil {
+		return fmt.Errorf("request traffic: %w", err)
+	}
+
+	return nil
 }
 
 // dispatch handles messages until the session ends or ctx is done. The
@@ -221,6 +290,11 @@ func dispatch(ctx context.Context, c conn, d *dispatcher) (bool, error) {
 
 	for ctx.Err() == nil {
 		d.tick(time.Now())
+
+		err := trafficTick(c, d, time.Now())
+		if err != nil {
+			return d.connected, fmt.Errorf("connection lost: %w", err)
+		}
 
 		buf := c.nextDispatch()
 		if buf == nil {

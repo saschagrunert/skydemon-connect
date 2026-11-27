@@ -83,6 +83,35 @@ func TestRunInputSimError(t *testing.T) {
 	}
 }
 
+// The sim's traffic is asked for unless -no-traffic, or -test-traffic,
+// which replaces it.
+func TestRunInputTraffic(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		c    config
+		want bool
+	}{
+		{config{}, true},
+		{config{noTraffic: true}, false},
+		{config{testTraffic: true}, false},
+	} {
+		var got bool
+
+		sim := func(_ context.Context, _ *log.Logger, h simconnect.Handlers) {
+			got = h.Traffic != nil
+		}
+
+		f := feed.New(feed.Outputs{}, testutil.Log(t))
+		runInput(t.Context(), f, &tc.c, input{sim: sim}, func() {}, testutil.Log(t))
+
+		if got != tc.want {
+			t.Errorf("noTraffic %v, testTraffic %v: traffic %v, want %v",
+				tc.c.noTraffic, tc.c.testTraffic, got, tc.want)
+		}
+	}
+}
+
 func TestSessionEndQuits(t *testing.T) {
 	t.Parallel()
 

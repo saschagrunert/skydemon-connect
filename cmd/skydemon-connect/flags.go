@@ -24,8 +24,8 @@ const (
 	maxDemoLat = 85.0
 	maxLon     = 180.0
 
-	// maxName keeps XGPS/XATT messages short, as the ForeFlight
-	// specification asks.
+	// maxName keeps the messages short, as the ForeFlight specification
+	// asks.
 	maxName = 32
 )
 
@@ -33,11 +33,13 @@ var (
 	errNoOut = errors.New("nothing to do: set -udp and/or -com")
 	errArg   = errors.New("options start with a dash, e.g. -demo; -udp takes one" +
 		" comma-separated list (in PowerShell, put it in quotes)")
-	errUnknown   = errors.New("unknown option")
-	errQuiet     = errors.New("-quiet only works with -console")
-	errBaudNoCom = errors.New("-baud only works with -com")
-	errDemoPlace = errors.New("-demo-lat and -demo-lon only work with -demo")
-	errName      = fmt.Errorf(
+	errUnknown     = errors.New("unknown option")
+	errQuiet       = errors.New("-quiet only works with -console")
+	errBaudNoCom   = errors.New("-baud only works with -com")
+	errDemoPlace   = errors.New("-demo-lat and -demo-lon only work with -demo")
+	errTestTraffic = errors.New("-test-traffic doesn't work with -no-traffic")
+	errTrafficUDP  = errors.New("-test-traffic needs UDP: NMEA has no traffic")
+	errName        = fmt.Errorf(
 		"-name must be 1 to %d printable ASCII characters, no commas",
 		maxName,
 	)
@@ -56,6 +58,8 @@ type config struct {
 	baud             uint32
 	demoLat, demoLon float64
 	noAttitude, demo bool
+	noTraffic        bool
+	testTraffic      bool
 	quiet, console   bool
 	auto             bool
 	version          bool
@@ -131,12 +135,14 @@ func define(fs *flag.FlagSet, c *config, opts *given) map[string]bool {
 	}
 
 	fs.StringVar(&opts.udp, "udp", targets.Auto,
-		"comma-separated UDP targets (host or host:port) for XGPS/XATT, port "+
+		"comma-separated UDP targets (host or host:port) for the ForeFlight messages, port "+
 			strconv.Itoa(foreflight.Port)+" if left out; -udp= disables UDP (with -com). "+
 			`"auto" is this PC and every local network (Wi-Fi tablets)`)
 	fs.BoolVar(&c.noAttitude, "no-xatt", false, "don't send XATT attitude messages")
+	fs.BoolVar(&c.noTraffic, "no-traffic", false,
+		"don't send the aircraft around yours (XTRAFFIC) over UDP")
 	fs.StringVar(&c.name, "name", "MSFS",
-		"simulator name in XGPS/XATT messages, up to "+strconv.Itoa(maxName)+
+		"simulator name in the ForeFlight messages, up to "+strconv.Itoa(maxName)+
 			" ASCII characters, no commas")
 	fs.StringVar(&c.com, "com", "", "COM port for NMEA output, e.g. COM11")
 	fs.IntVar(&opts.baud, "baud", defaultBaud, "COM port baud rate (with -com)")
@@ -144,6 +150,8 @@ func define(fs *flag.FlagSet, c *config, opts *given) map[string]bool {
 		"fly a 100 kt circle without MSFS, to test SkyDemon")
 	fs.Float64Var(&c.demoLat, localFlag("demo-lat"), defaultDemoLat, "demo circle centre latitude")
 	fs.Float64Var(&c.demoLon, localFlag("demo-lon"), defaultDemoLon, "demo circle centre longitude")
+	fs.BoolVar(&c.testTraffic, localFlag("test-traffic"), false,
+		"send three made-up aircraft around your own, to test traffic in the EFB")
 	fs.BoolVar(&c.quiet, localFlag("quiet"), false, "with -console: no status line")
 	fs.BoolVar(&c.console, localFlag("console"), false, "show a console instead of the tray icon")
 	fs.BoolVar(&c.auto, localFlag("auto"), false,
@@ -194,6 +202,8 @@ func validate(c *config, opts *given) error {
 		return errQuiet
 	case !validName(c.name):
 		return errName
+	case c.testTraffic && c.noTraffic:
+		return errTestTraffic
 	}
 
 	err := validateDemo(c, opts)
@@ -229,6 +239,10 @@ func validateOutputs(c *config, opts *given) error {
 		return errNoOut
 	}
 
+	if c.testTraffic && spec.Empty() {
+		return errTrafficUDP
+	}
+
 	c.spec = spec
 
 	c.baud, err = serial.CheckBaud(opts.baud)
@@ -243,7 +257,7 @@ func validateOutputs(c *config, opts *given) error {
 	return nil
 }
 
-// validName reports whether name fits the XGPS/XATT messages: printable
+// validName reports whether name fits the ForeFlight messages: printable
 // ASCII without the field separator.
 func validName(name string) bool {
 	return name != "" && len(name) <= maxName &&

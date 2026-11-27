@@ -12,10 +12,13 @@ import (
 )
 
 // Handlers receive what happens on the connection. All are called from the
-// connection goroutine, must not block, and must all be set.
+// connection goroutine, must not block, and must all be set but Traffic.
 type Handlers struct {
 	// Update receives every sim frame's aircraft state.
 	Update func(position.Sample)
+	// Traffic receives the other aircraft within 30 NM about once a
+	// second, and nil when the session ends. Nil: no traffic is asked for.
+	Traffic func([]position.Traffic)
 	// Connected is called with each change of whether a session is
 	// connected to MSFS, in a flight or not, so that the UI can tell "MSFS
 	// not running" from "in its menu". It starts as false.

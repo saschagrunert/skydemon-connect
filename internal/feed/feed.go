@@ -3,6 +3,7 @@
 package feed
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -178,6 +179,10 @@ type Feed struct {
 	same    int
 	frames  frameRate
 	targets []netip.AddrPort
+	// traffic are the other aircraft, sent at TrafficHz; trafficFunc,
+	// when set, makes them instead.
+	traffic     []position.Traffic
+	trafficFunc TrafficFunc
 	// err is the input's error, from SetError. Whether an output fails
 	// is errs's to say.
 	err    string
@@ -343,6 +348,33 @@ func (f *Feed) Status() Status {
 	}
 }
 
+// TrafficHz is how often the other aircraft are sent. Traffic receivers
+// report each target about once a second.
+const TrafficHz = 1
+
+// MaxTraffic is how many of the other aircraft are sent, the nearest: a
+// busy airport with injected traffic can have hundreds.
+const MaxTraffic = 50
+
+// SetTraffic replaces the other aircraft sent while positions are.
+func (f *Feed) SetTraffic(t []position.Traffic) {
+	f.mu.Lock()
+	f.traffic = t
+	f.mu.Unlock()
+}
+
+// TrafficFunc makes the other aircraft around own, the position about to
+// be sent at now.
+type TrafficFunc func(own position.Sample, now time.Time) []position.Traffic
+
+// SetTrafficFunc makes the traffic sent with fn, from Run's goroutine,
+// instead of SetTraffic's.
+func (f *Feed) SetTrafficFunc(fn TrafficFunc) {
+	f.mu.Lock()
+	f.trafficFunc = fn
+	f.mu.Unlock()
+}
+
 // Run sends until ctx is done, and returns once nothing writes to the
 // outputs anymore, so they can be closed.
 func (f *Feed) Run(ctx context.Context) {
@@ -353,6 +385,12 @@ func (f *Feed) Run(ctx context.Context) {
 		// A slow or unread COM port must not delay UDP, so NMEA is
 		// written apart from the ticker.
 		wg.Go(func() { f.runSerial(ctx) })
+	}
+
+	if f.out.UDP != nil {
+		// Hundreds of datagrams a second, should writes block, must not
+		// delay the positions either.
+		wg.Go(func() { f.runTraffic(ctx) })
 	}
 
 	tick := time.NewTicker(time.Second / RateHz)
@@ -491,6 +529,70 @@ func (f *Feed) sendUDP(s position.Sample) {
 	}
 
 	f.errs.Report(keyUDP, none)
+}
+
+// runTraffic sends the traffic at TrafficHz while positions are sent,
+// until ctx is done.
+func (f *Feed) runTraffic(ctx context.Context) {
+	tick := time.NewTicker(time.Second / TrafficHz)
+	defer tick.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case now := <-tick.C:
+			f.mu.Lock()
+			own, send := f.toSendLocked(now)
+			traffic, fn, dests := f.traffic, f.trafficFunc, f.targets
+			f.mu.Unlock()
+
+			if !send {
+				continue
+			}
+
+			if fn != nil {
+				traffic = fn(own, now)
+			}
+
+			f.sendTraffic(nearest(own, traffic, MaxTraffic), dests)
+		}
+	}
+}
+
+// nearest returns the n targets in traffic nearest to own, or all of them
+// if they are no more.
+func nearest(own position.Sample, traffic []position.Traffic, n int) []position.Traffic {
+	if len(traffic) <= n {
+		return traffic
+	}
+
+	// Flat, and squared: only the order counts.
+	k := math.Cos(own.Lat / position.DegPerRad)
+	dist := func(t position.Traffic) float64 {
+		dLat, dLon := t.Lat-own.Lat, position.Norm180(t.Lon-own.Lon)*k
+
+		return dLat*dLat + dLon*dLon
+	}
+
+	sorted := slices.Clone(traffic)
+	slices.SortFunc(sorted, func(a, b position.Traffic) int {
+		return cmp.Compare(dist(a), dist(b))
+	})
+
+	return sorted[:n]
+}
+
+// sendTraffic sends every target in traffic to dests. Failures show in the
+// position sends, which go to the same destinations.
+func (f *Feed) sendTraffic(traffic []position.Traffic, dests []netip.AddrPort) {
+	for _, tr := range traffic {
+		msg := []byte(foreflight.XTRAFFIC(f.out.Name, tr))
+
+		for _, t := range dests {
+			_, _ = f.out.UDP.WriteToUDPAddrPort(msg, t)
+		}
+	}
 }
 
 // queueNMEA hands x to the serial writer. While the writer is still busy,

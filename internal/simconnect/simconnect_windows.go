@@ -17,10 +17,9 @@ import (
 
 // Constants from SimConnect.h.
 const (
-	datatypeFloat64 = 4
-	periodSimFrame  = 3
-	objectUser      = 0
-	unused          = 0xFFFFFFFF
+	periodSimFrame = 3
+	objectUser     = 0
+	unused         = 0xFFFFFFFF
 )
 
 // LoadLibraryEx flags: look for the DLL's own imports, e.g. the VC++
@@ -40,7 +39,8 @@ var (
 
 type api struct {
 	procOpen, procClose, procAddToDataDefinition, procRequestData,
-	procSubscribeToSystemEvent, procGetNextDispatch *syscall.Proc
+	procRequestDataByType, procSubscribeToSystemEvent,
+	procGetNextDispatch *syscall.Proc
 }
 
 // dllCandidates are the places SimConnect.dll is looked for, in order:
@@ -133,6 +133,7 @@ func bind(dll *syscall.DLL) (*api, error) {
 		{&a.procClose, "SimConnect_Close"},
 		{&a.procAddToDataDefinition, "SimConnect_AddToDataDefinition"},
 		{&a.procRequestData, "SimConnect_RequestDataOnSimObject"},
+		{&a.procRequestDataByType, "SimConnect_RequestDataOnSimObjectType"},
 		{&a.procSubscribeToSystemEvent, "SimConnect_SubscribeToSystemEvent"},
 		{&a.procGetNextDispatch, "SimConnect_GetNextDispatch"},
 	} {
@@ -250,6 +251,38 @@ func (c *dllConn) addToDataDefinition(name, unit string) error {
 	r, _, _ := c.a.procAddToDataDefinition.Call(c.handle, defineID,
 		uintptr(unsafe.Pointer(n)), uintptr(unsafe.Pointer(u)),
 		datatypeFloat64, 0 /* epsilon 0.0f */, unused)
+
+	return hr(r)
+}
+
+func (c *dllConn) addTrafficVar(name, unit string, datatype uint32) error {
+	n, err := syscall.BytePtrFromString(name)
+	if err != nil {
+		return fmt.Errorf("sim var name: %w", err)
+	}
+
+	// No unit, as for strings, is passed as NULL.
+	var u uintptr
+
+	if unit != "" {
+		p, err := syscall.BytePtrFromString(unit)
+		if err != nil {
+			return fmt.Errorf("sim var unit: %w", err)
+		}
+
+		u = uintptr(unsafe.Pointer(p))
+	}
+
+	r, _, _ := c.a.procAddToDataDefinition.Call(c.handle, trafficDefineID,
+		uintptr(unsafe.Pointer(n)), u, uintptr(datatype),
+		0 /* epsilon 0.0f */, unused)
+
+	return hr(r)
+}
+
+func (c *dllConn) requestTraffic(request, objectType, radius uint32) error {
+	r, _, _ := c.a.procRequestDataByType.Call(c.handle, uintptr(request),
+		trafficDefineID, uintptr(radius), uintptr(objectType))
 
 	return hr(r)
 }

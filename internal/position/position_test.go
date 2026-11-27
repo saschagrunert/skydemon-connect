@@ -30,6 +30,23 @@ func TestNorm360(t *testing.T) {
 	}
 }
 
+func TestNorm180(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct{ in, want float64 }{
+		{0, 0},
+		{10, 10},
+		{190, -170},
+		{-190, 170},
+		{180, -180},
+		{-359.5, 0.5},
+	} {
+		if got := position.Norm180(tc.in); math.Abs(got-tc.want) > 1e-9 {
+			t.Errorf("Norm180(%v) = %v, want %v", tc.in, got, tc.want)
+		}
+	}
+}
+
 func TestRound(t *testing.T) {
 	t.Parallel()
 

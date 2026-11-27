@@ -1,7 +1,7 @@
 # SkyDemonConnect in detail
 
 What the [README](../README.md) leaves out: the tray menu, starting with
-MSFS, the demo, updating, all options and how to build it.
+MSFS, the demo, traffic, updating, all options and how to build it.
 
 ## Tray icon
 
@@ -36,7 +36,8 @@ session, or started by MSFS while another copy runs, logs to
 Steam), so that MSFS starts it and it quits with MSFS. The entry gets the
 options this copy was started with that differ from the defaults, e.g.
 `-udp`, but not `-auto`, `-console`, `-demo`, `-demo-lat`, `-demo-lon`,
-`-quiet` or `-version`, which only make sense for one start.
+`-test-traffic`, `-quiet` or `-version`, which only make sense for one
+start.
 
 The original `exe.xml` is backed up once to `exe.xml.bak-skydemonconnect`
 (an empty one if there was none), and the file as it was before the latest
@@ -75,7 +76,19 @@ the file doesn't exist, create it like this; otherwise add only the
 
 `.\SkyDemonConnect.exe -demo` flies a 100 kt circle without MSFS, to test
 the connection; quit the tray copy first, as only one runs at a time.
-`-demo-lat` and `-demo-lon` move the circle.
+`-demo-lat` and `-demo-lon` move the circle. Add `-test-traffic` for three
+made-up aircraft around yours, to see traffic in SkyDemon.
+
+## Traffic
+
+Every aircraft and helicopter MSFS simulates within 30 NM is sent to SkyDemon
+once a second, the 50 nearest if there are more, whoever created it: MSFS's
+own AI and live traffic, and traffic injectors such as BeyondATC or FSLTL.
+Whether MSFS 2024 hands out multiplayer aircraft this way is not verified
+yet. The label is the aircraft's ATC ID (registration or callsign), as MSFS
+shows it, or `T` and its made-up ICAO address without one. Traffic goes over
+UDP only, as NMEA on `-com` has no traffic sentences, and so does
+`-test-traffic`. `-no-traffic` turns it off.
 
 ## Update and uninstall
 
@@ -97,20 +110,22 @@ target; `-help` lists them. Quote comma-separated lists in PowerShell, e.g.
 `-udp "127.0.0.1:49002,192.168.1.23:49002"`, and write `-udp=` rather than
 `-udp ""`, which PowerShell 5.1 drops.
 
-| Option      | Default | Meaning                                                              |
-| ----------- | ------- | -------------------------------------------------------------------- |
-| `-udp`      | `auto`  | where to send the UDP messages, see below                            |
-| `-com`      |         | also write NMEA (RMC, GGA, GSA) to a COM port                        |
-| `-baud`     | 115200  | COM port baud rate (with `-com`)                                     |
-| `-no-xatt`  | off     | don't send attitude messages                                         |
-| `-name`     | MSFS    | simulator name in the messages, up to 32 ASCII characters, no commas |
-| `-demo`     | off     | fly a 100 kt circle without MSFS                                     |
-| `-demo-lat` | 51.4239 | centre of the demo circle (Leipzig/Halle), with `-demo`              |
-| `-demo-lon` | 12.2364 |                                                                      |
-| `-console`  | off     | a console window with a live status line instead of the tray         |
-| `-quiet`    | off     | with `-console`: no status line                                      |
-| `-auto`     | off     | as used in `exe.xml`: start silently, exit when MSFS closes          |
-| `-version`  |         | show the version                                                     |
+| Option          | Default | Meaning                                                              |
+| --------------- | ------- | -------------------------------------------------------------------- |
+| `-udp`          | `auto`  | where to send the UDP messages, see below                            |
+| `-com`          |         | also write NMEA (RMC, GGA, GSA) to a COM port                        |
+| `-baud`         | 115200  | COM port baud rate (with `-com`)                                     |
+| `-no-xatt`      | off     | don't send attitude messages                                         |
+| `-no-traffic`   | off     | don't send the aircraft around yours                                 |
+| `-name`         | MSFS    | simulator name in the messages, up to 32 ASCII characters, no commas |
+| `-demo`         | off     | fly a 100 kt circle without MSFS                                     |
+| `-demo-lat`     | 51.4239 | centre of the demo circle (Leipzig/Halle), with `-demo`              |
+| `-demo-lon`     | 12.2364 |                                                                      |
+| `-test-traffic` | off     | three made-up aircraft around yours, instead of MSFS's traffic       |
+| `-console`      | off     | a console window with a live status line instead of the tray         |
+| `-quiet`        | off     | with `-console`: no status line                                      |
+| `-auto`         | off     | as used in `exe.xml`: start silently, exit when MSFS closes          |
+| `-version`      |         | show the version                                                     |
 
 `-udp` takes comma-separated `host` or `host:port` targets (port 49002 if
 left out). `auto` is this PC and every local network; `-udp=` turns UDP
@@ -138,7 +153,8 @@ position as
 [ForeFlight simulator messages](https://foreflight.com/support/network-gps)
 (`XGPS` and `XATT` on UDP port 49002) and, with `-com`, as NMEA sentences.
 The track is the ground track, including wind drift; all directions are
-true.
+true. Once a second it asks MSFS for the aircraft and helicopters within
+30 NM and sends each but your own as `XTRAFFIC`.
 
 ## Development
 
