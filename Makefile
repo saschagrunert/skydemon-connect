@@ -12,6 +12,16 @@ export GOTOOLCHAIN := $(GOTOOLCHAIN)
 # Dependabot keeps current.
 GOLANGCI_LINT_VERSION = 2.15.0
 
+# Prettier, which formats the Markdown, YAML and JSON, has no binary
+# releases: npx runs this version of the npm package in the node image,
+# pinned by the digest of its index. Bump both by hand; for the digest, see
+# `skopeo inspect --format '{{.Digest}}' docker://docker.io/library/node:<version>-slim`.
+PRETTIER_VERSION = 3.10.1
+NODE_VERSION = 26.13.1
+NODE_DIGEST = sha256:e6bedef217677b276c591795e169840edd9096dbf13f29df8ef8d1856b8820bc
+NODE_IMAGE = docker.io/library/node:$(NODE_VERSION)-slim@$(NODE_DIGEST)
+CONTAINER_RUNTIME ?= podman
+
 # SHA-256 checksums for downloaded tools, named <TOOL>_SHA256_<os>_<arch>,
 # from the release's checksums.txt.
 # Downloads fail when no checksum is pinned for the current platform.
@@ -47,9 +57,11 @@ SYSO := cmd/skydemon-connect/rsrc_windows_amd64.syso
 FILE_VERSION := $(or $(shell echo "$(VERSION)" | sed -nE 's/^v?([0-9]+)\.([0-9]+)\.([0-9]+).*/\1.\2.\3.0/p'),0.0.0.0)
 
 # Go's names for the host, which also name the golangci-lint downloads. Not
-# OS and ARCH: Windows sets OS=Windows_NT in every environment.
-HOST_OS := $(shell $(GO) env GOHOSTOS)
-HOST_ARCH := $(shell $(GO) env GOHOSTARCH)
+# OS and ARCH: Windows sets OS=Windows_NT in every environment. Every Go
+# names the host alike, so the local one answers, without downloading the
+# toolchain of go.mod, e.g. for make verify-format, which needs no Go.
+HOST_OS := $(shell GOTOOLCHAIN=local $(GO) env GOHOSTOS 2>/dev/null)
+HOST_ARCH := $(shell GOTOOLCHAIN=local $(GO) env GOHOSTARCH 2>/dev/null)
 
 # The build's own tools run here, also when GOOS=windows is exported.
 HOST_GO := GOOS=$(HOST_OS) GOARCH=$(HOST_ARCH) $(GO)
@@ -139,9 +151,11 @@ bundle: $(BUNDLE) ## Zip the exe with SimConnect.dll from the MSFS SDK (needs ms
 
 # The entries get SOURCE_DATE_EPOCH, or else the commit's time, so the same
 # commit gives the same zip.
-$(BUNDLE): $(BINARY) $(SDK_DIR)/SimConnect.dll README.md LICENSE NOTICE.md
+# docs/reference.md keeps its folder, so that the README's link to it works.
+$(BUNDLE): $(BINARY) $(SDK_DIR)/SimConnect.dll README.md docs/reference.md LICENSE NOTICE.md
 	$(HOST_GO) run ./internal/zipfiles $@ "$${SOURCE_DATE_EPOCH:-$$(git log -1 --format=%ct)}" \
-		$(BINARY) $(SDK_DIR)/SimConnect.dll "$(SDK_DIR)/MSFS SDK EULA.pdf" README.md LICENSE NOTICE.md
+		$(BINARY) $(SDK_DIR)/SimConnect.dll "$(SDK_DIR)/MSFS SDK EULA.pdf" README.md \
+		docs/reference.md=docs/reference.md LICENSE NOTICE.md
 
 # The SDK installer is an MSI with external cabinets; msiextract unpacks
 # all of it, of which two files are kept.
@@ -201,6 +215,18 @@ $(BUILD_DIR)/golangci-lint-$(GOLANGCI_LINT_VERSION)$(EXE):
 	$(call unpack,$(BUILD_DIR)/golangci-lint.$(LINT_ARCHIVE),golangci-lint-$(GOLANGCI_LINT_VERSION)-$(HOST_OS)-$(HOST_ARCH)/golangci-lint$(EXE))
 	mv $(BUILD_DIR)/golangci-lint$(EXE) $@
 	rm $(BUILD_DIR)/golangci-lint.$(LINT_ARCHIVE)
+
+PRETTIER = $(CONTAINER_RUNTIME) run --rm -v "$(CURDIR)":/w:z -w /w \
+	-e NPM_CONFIG_UPDATE_NOTIFIER=false --entrypoint npx \
+	$(NODE_IMAGE) --yes prettier@$(PRETTIER_VERSION)
+
+.PHONY: verify-format
+verify-format: ## Verify the Markdown, YAML and JSON are formatted (needs podman or CONTAINER_RUNTIME=docker)
+	$(PRETTIER) --check .
+
+.PHONY: format
+format: ## Format the Markdown, YAML and JSON with Prettier (needs podman or CONTAINER_RUNTIME=docker)
+	$(PRETTIER) --write .
 
 .PHONY: govulncheck
 govulncheck: $(BUILD_DIR)/govulncheck$(EXE) $(BUILD_DIR)/go-winres$(EXE) ## Check the release build and its tools for known vulnerabilities

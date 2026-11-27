@@ -36,10 +36,12 @@ const (
 	// maxByte is the highest character one byte holds, as a bytewise
 	// file is read.
 	maxByte = 0xFF
-	// project is where the README shows the entry to add by hand.
-	project = "github.com/saschagrunert/skydemon-connect"
+	// manual is where the entry to add by hand is: the page, which the
+	// release zip has too, and the repository, as released exes carry the
+	// text and a heading or a URL of the page may change.
+	manual = "docs/reference.md (in the zip and at github.com/saschagrunert/skydemon-connect)"
 	// byHand is what to do about a file this package won't change.
-	byHand = "; add the entry by hand, see " + project
+	byHand = "; add the entry by hand, see " + manual
 	// replaceTries and replaceWait bound the retries of replacing a file
 	// that another program, e.g. a virus scanner or MSFS, has open.
 	replaceTries = 10
@@ -74,7 +76,7 @@ var (
 	declRE = regexp.MustCompile(`\A\s*<\?xml\b[^>]*?\bencoding\s*=\s*["']([^"']*)["']`)
 
 	errNoInstall = errors.New("MSFS 2024 not found (Microsoft Store or Steam). " +
-		"Start MSFS once, or add the entry by hand, see " + project)
+		"Start MSFS once, or add the entry by hand, see " + manual)
 	errChanged      = errors.New("changed while it was being edited, try again")
 	errNoDocClose   = errors.New("exe.xml has no " + docClose + ", not touching it" + byHand)
 	errUTF16        = errors.New("exe.xml is UTF-16 or binary, not touching it" + byHand)

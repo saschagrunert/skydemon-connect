@@ -159,6 +159,7 @@ linters:
     varnamelen:
       # Short names for short scopes: loop indices, coordinates, the usual
       # receivers and Win32 handles.
+      # prettier-ignore
       ignore-names: [a, b, c, d, f, h, i, j, l, n, p, r, s, t, u, v, w, x, y, ok, st, tc, px, id, ip, fn, pt]
       ignore-decls:
         - t *testing.T

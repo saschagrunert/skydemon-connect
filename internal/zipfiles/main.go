@@ -1,7 +1,12 @@
 // Command zipfiles writes a zip that is the same for the same files: the
 // entries get one fixed time and plain permissions, not the build machine's.
 //
-//	zipfiles <out.zip> <unix time> <file>...
+//	zipfiles <out.zip> <unix time> <file>[=<name in zip>]...
+//
+// A file goes into the zip under its base name, or under the given name,
+// e.g. docs/reference.md=docs/reference.md to keep its folder. An argument
+// that names an existing file is that file, = and all; otherwise the last =
+// splits it, so a name in the zip can't contain =.
 package main
 
 import (
@@ -9,9 +14,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -21,17 +28,20 @@ const (
 	fileMode  = 0o644
 )
 
+const usage = "usage: zipfiles <out.zip> <unix time> <file>[=<name in zip>]..."
+
 // zipEpochYear is the earliest year a zip entry can hold (MS-DOS time).
 const zipEpochYear = 1980
 
 var (
 	errTooEarly  = errors.New("time is before 1980, which zip can't hold")
 	errDuplicate = errors.New("two files of the same name")
+	errBadName   = errors.New("zip name must be relative, without . or .. elements")
 )
 
 func main() {
 	if len(os.Args) < minArgs {
-		_, _ = fmt.Fprintln(os.Stderr, "usage: zipfiles <out.zip> <unix time> <file>...")
+		_, _ = fmt.Fprintln(os.Stderr, usage)
 
 		os.Exit(exitUsage)
 	}
@@ -75,17 +85,25 @@ func write(out string, modified time.Time, files []string) error {
 	archive := zip.NewWriter(f)
 	seen := map[string]bool{}
 
-	for _, name := range files {
-		base := filepath.Base(name)
-		if seen[base] {
+	for _, arg := range files {
+		var src, name string
+
+		src, name, err = entry(arg)
+		if err != nil {
 			_ = f.Close()
 
-			return fmt.Errorf("%w: %s", errDuplicate, base)
+			return err
 		}
 
-		seen[base] = true
+		if seen[name] {
+			_ = f.Close()
 
-		err = add(archive, name, modified)
+			return fmt.Errorf("%w: %s", errDuplicate, name)
+		}
+
+		seen[name] = true
+
+		err = add(archive, src, name, modified)
 		if err != nil {
 			_ = f.Close()
 
@@ -108,24 +126,44 @@ func write(out string, modified time.Time, files []string) error {
 	return nil
 }
 
-func add(archive *zip.Writer, name string, modified time.Time) error {
-	src, err := os.Open(name)
+// entry splits a <file>[=<name in zip>] argument into the file and its
+// name in the zip, which uses forward slashes, also for a \ on Linux.
+func entry(arg string) (string, string, error) {
+	src, name := arg, filepath.Base(arg)
+
+	i := strings.LastIndex(arg, "=")
+
+	_, err := os.Stat(arg)
+	if i >= 0 && errors.Is(err, fs.ErrNotExist) {
+		src, name = arg[:i], arg[i+1:]
+	}
+
+	name = strings.ReplaceAll(name, `\`, "/")
+	if !fs.ValidPath(name) || name == "." || !filepath.IsLocal(filepath.FromSlash(name)) {
+		return "", "", fmt.Errorf("%w: %q", errBadName, name)
+	}
+
+	return src, name, nil
+}
+
+func add(archive *zip.Writer, src, name string, modified time.Time) error {
+	file, err := os.Open(src)
 	if err != nil {
 		return err
 	}
-	defer func() { _ = src.Close() }()
+	defer func() { _ = file.Close() }()
 
-	h := &zip.FileHeader{Name: filepath.Base(name), Method: zip.Deflate, Modified: modified}
+	h := &zip.FileHeader{Name: name, Method: zip.Deflate, Modified: modified}
 	h.SetMode(fileMode)
 
 	w, err := archive.CreateHeader(h)
 	if err != nil {
-		return fmt.Errorf("%s: %w", name, err)
+		return fmt.Errorf("%s: %w", src, err)
 	}
 
-	_, err = io.Copy(w, src)
+	_, err = io.Copy(w, file)
 	if err != nil {
-		return fmt.Errorf("%s: %w", name, err)
+		return fmt.Errorf("%s: %w", src, err)
 	}
 
 	return nil

@@ -109,7 +109,7 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: |
           flags=(--verify-tag --generate-notes --title "$GITHUB_REF_NAME"
-            --notes "Download SkyDemonConnect-$GITHUB_REF_NAME.zip, extract it to a folder of its own and start SkyDemonConnect.exe. See the README for details.")
+            --notes "Download SkyDemonConnect-$GITHUB_REF_NAME.zip, extract it to a folder of its own and start SkyDemonConnect.exe. See README.md for setup and docs/reference.md in the zip for the details.")
           [[ "$GITHUB_REF_NAME" == *-* ]] && flags+=(--prerelease)
           gh release create "$GITHUB_REF_NAME" "${flags[@]}" \
             build/SkyDemonConnect-*.zip build/SHA256SUMS
