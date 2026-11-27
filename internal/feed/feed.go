@@ -352,9 +352,20 @@ func (f *Feed) Status() Status {
 // report each target about once a second.
 const TrafficHz = 1
 
-// MaxTraffic is how many of the other aircraft are sent, the nearest: a
+// MaxTraffic is how many of the other aircraft are sent, see nearest: a
 // busy airport with injected traffic can have hundreds.
 const MaxTraffic = 50
+
+// parkedKnots is the ground speed below which a target on the ground
+// counts as parked.
+const parkedKnots = 1.0
+
+// How much a target matters, see nearest.
+const (
+	rankAirborne = iota
+	rankMoving
+	rankParked
+)
 
 // SetTraffic replaces the other aircraft sent while positions are.
 func (f *Feed) SetTraffic(t []position.Traffic) {
@@ -555,16 +566,30 @@ func (f *Feed) runTraffic(ctx context.Context) {
 				traffic = fn(own, now)
 			}
 
-			f.sendTraffic(nearest(own, traffic, MaxTraffic), dests)
+			f.sendTraffic(nearest(own, traffic), dests)
 		}
 	}
 }
 
-// nearest returns the n targets in traffic nearest to own, or all of them
-// if they are no more.
-func nearest(own position.Sample, traffic []position.Traffic, n int) []position.Traffic {
-	if len(traffic) <= n {
+// nearest returns the MaxTraffic targets in traffic that matter most to
+// own, or all of them if they are no more: the airborne ones, then those moving on
+// the ground, then the parked ones, each nearest first. Hundreds parked at
+// a big airport would otherwise push out the aircraft on final, and a
+// real receiver doesn't see most of them, their transponders off.
+func nearest(own position.Sample, traffic []position.Traffic) []position.Traffic {
+	if len(traffic) <= MaxTraffic {
 		return traffic
+	}
+
+	rank := func(t position.Traffic) int {
+		switch {
+		case t.Airborne:
+			return rankAirborne
+		case t.GSKnots >= parkedKnots:
+			return rankMoving
+		default:
+			return rankParked
+		}
 	}
 
 	// Flat, and squared: only the order counts.
@@ -577,10 +602,10 @@ func nearest(own position.Sample, traffic []position.Traffic, n int) []position.
 
 	sorted := slices.Clone(traffic)
 	slices.SortFunc(sorted, func(a, b position.Traffic) int {
-		return cmp.Compare(dist(a), dist(b))
+		return cmp.Or(cmp.Compare(rank(a), rank(b)), cmp.Compare(dist(a), dist(b)))
 	})
 
-	return sorted[:n]
+	return sorted[:MaxTraffic]
 }
 
 // sendTraffic sends every target in traffic to dests. Failures show in the

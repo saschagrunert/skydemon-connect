@@ -75,7 +75,7 @@ func TestRunInputSimError(t *testing.T) {
 	t.Parallel()
 
 	f := feed.New(feed.Outputs{}, testutil.Log(t))
-	runInput(t.Context(), f, &config{}, input{sim: failingSim},
+	runInput(t.Context(), f, flags(t), input{sim: failingSim},
 		func() { t.Error("quit") }, testutil.Log(t))
 
 	if st := f.Status(); st.Kind != feed.Failed || st.Err != errSim.Error() {
@@ -83,18 +83,19 @@ func TestRunInputSimError(t *testing.T) {
 	}
 }
 
-// The sim's traffic is asked for unless -no-traffic, or -test-traffic,
-// which replaces it.
+// The sim's traffic is asked for unless -no-traffic, -test-traffic, which
+// replaces it, or UDP is off, as only UDP carries it.
 func TestRunInputTraffic(t *testing.T) {
 	t.Parallel()
 
 	for _, tc := range []struct {
-		c    config
+		args []string
 		want bool
 	}{
-		{config{}, true},
-		{config{noTraffic: true}, false},
-		{config{testTraffic: true}, false},
+		{nil, true},
+		{[]string{"-no-traffic"}, false},
+		{[]string{"-test-traffic"}, false},
+		{[]string{"-udp=", "-com", "COM11"}, false},
 	} {
 		var got bool
 
@@ -103,11 +104,10 @@ func TestRunInputTraffic(t *testing.T) {
 		}
 
 		f := feed.New(feed.Outputs{}, testutil.Log(t))
-		runInput(t.Context(), f, &tc.c, input{sim: sim}, func() {}, testutil.Log(t))
+		runInput(t.Context(), f, flags(t, tc.args...), input{sim: sim}, func() {}, testutil.Log(t))
 
 		if got != tc.want {
-			t.Errorf("noTraffic %v, testTraffic %v: traffic %v, want %v",
-				tc.c.noTraffic, tc.c.testTraffic, got, tc.want)
+			t.Errorf("%q: traffic %v, want %v", tc.args, got, tc.want)
 		}
 	}
 }

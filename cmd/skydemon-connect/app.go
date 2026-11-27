@@ -233,8 +233,8 @@ func runInput(
 		Traffic: nil,
 	}
 
-	// -test-traffic replaces the sim's traffic.
-	if !c.noTraffic && !c.testTraffic {
+	// -test-traffic replaces the sim's traffic, which only goes over UDP.
+	if !c.noTraffic && !c.testTraffic && !c.spec.Empty() {
 		h.Traffic = f.SetTraffic
 	}
 

@@ -261,25 +261,27 @@ func defineTraffic(c conn) error {
 	return nil
 }
 
-// trafficTick asks for traffic when it is time to, while connected.
-func trafficTick(c conn, d *dispatcher, now time.Time) error {
+// trafficTick asks for traffic when it is time to, while connected. A
+// request that fails ends the traffic of the session, not the session:
+// positions matter more. A broken pipe, the usual reason, ends it anyway
+// once the next data request fails.
+func trafficTick(c conn, d *dispatcher, now time.Time) {
 	if d.h.Traffic == nil || !d.connected {
-		return nil
+		return
 	}
 
 	changed, err := d.traffic.due(now, func(id, objectType uint32) error {
 		return c.requestTraffic(id, objectType, trafficRadiusM)
 	})
 
-	if changed {
+	switch {
+	case err != nil:
+		d.log.Printf("simconnect: no traffic: request traffic: %v", err)
+		d.h.Traffic(nil)
+		d.h.Traffic = nil
+	case changed:
 		d.h.Traffic(d.traffic.all())
 	}
-
-	if err != nil {
-		return fmt.Errorf("request traffic: %w", err)
-	}
-
-	return nil
 }
 
 // dispatch handles messages until the session ends or ctx is done. The
@@ -291,10 +293,7 @@ func dispatch(ctx context.Context, c conn, d *dispatcher) (bool, error) {
 	for ctx.Err() == nil {
 		d.tick(time.Now())
 
-		err := trafficTick(c, d, time.Now())
-		if err != nil {
-			return d.connected, fmt.Errorf("connection lost: %w", err)
-		}
+		trafficTick(c, d, time.Now())
 
 		buf := c.nextDispatch()
 		if buf == nil {
