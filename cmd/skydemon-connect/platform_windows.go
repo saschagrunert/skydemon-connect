@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"os"
 	"path/filepath"
@@ -157,7 +158,11 @@ func runTray(c *config, exe string) int {
 	r, err := startFeed(
 		ctx,
 		c,
-		input{sim: simconnect.Run, quitOnSessionEnd: sessionEndQuits(c.auto, watched)},
+		input{
+			sim:              simconnect.Run,
+			routes:           runRoutes,
+			quitOnSessionEnd: sessionEndQuits(c.auto, watched),
+		},
 		l,
 	)
 	if err != nil {
@@ -201,3 +206,16 @@ func notify(text string, isErr bool) {
 		win.ShowInfo(text)
 	}
 }
+
+// documentsDir is the user's Documents folder, wherever it is.
+func documentsDir() (string, error) {
+	dir, err := win.Documents()
+	if err != nil {
+		return "", fmt.Errorf("documents: %w", err)
+	}
+
+	return dir, nil
+}
+
+// msfsRunning reports whether MSFS runs on this PC.
+func msfsRunning() bool { return win.MSFSRunning() }

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 )
 
 // prepare has nothing to do outside Windows.
@@ -40,3 +41,16 @@ func notify(text string, isErr bool) {
 
 	_, _ = fmt.Fprintln(out, text)
 }
+
+// documentsDir is the Documents folder in the home folder.
+func documentsDir() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("no Documents folder: %w", err)
+	}
+
+	return filepath.Join(home, "Documents"), nil
+}
+
+// msfsRunning: MSFS runs on Windows only.
+func msfsRunning() bool { return false }

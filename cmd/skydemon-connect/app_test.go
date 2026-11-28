@@ -166,3 +166,46 @@ func TestStartFeedQuit(t *testing.T) {
 		})
 	}
 }
+
+// SkyDemon's routes go to the G1000 unless -no-route.
+func TestStartFeedRoutes(t *testing.T) {
+	t.Parallel()
+
+	conn := testutil.ListenUDP(t)
+
+	for _, noRoute := range []bool{false, true} {
+		args := []string{"-udp", conn.LocalAddr().String(), "-routes", t.TempDir()}
+		if noRoute {
+			args = []string{"-udp", conn.LocalAddr().String(), "-no-route"}
+		}
+
+		c := flags(t, args...)
+		called := make(chan string, 1)
+
+		routes := func(ctx context.Context, c *config, _ *log.Logger) {
+			called <- c.routes
+
+			<-ctx.Done()
+		}
+
+		r, err := startFeed(t.Context(), c, input{sim: idleSim, routes: routes}, testutil.Log(t))
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		select {
+		case dir := <-called:
+			if noRoute || dir != c.routes {
+				t.Errorf("-no-route %v: routes in %q", noRoute, dir)
+			}
+		case <-time.After(100 * time.Millisecond):
+			if !noRoute {
+				t.Error("routes not handed over")
+			}
+		}
+
+		r.stop()
+	}
+}
+
+func idleSim(ctx context.Context, _ *log.Logger, _ simconnect.Handlers) { <-ctx.Done() }

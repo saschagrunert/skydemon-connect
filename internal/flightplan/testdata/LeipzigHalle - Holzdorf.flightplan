@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<DivelementsFlightPlanner>
+  <AircraftReference Name="Diamond DA40D" Registration="D-EXXX" />
+  <PrimaryRoute CourseType="GreatCircle" Start="N512526.35 E0121411.00" StartType="Aerodrome" Level="2000" CruiseProfile="55 %" Rules="Vfr" PlannedFuel="0.000000">
+    <RhumbLineRoute To="N513236.00 E0121136.00" ToType="ReportingPoint" Level="MSL" LevelChange="B" />
+    <RhumbLineRoute To="N514956.00 E0121109.00" ToType="Aerodrome" Level="MSL" LevelChange="B" />
+    <RhumbLineRoute To="N521214.00 E0130936.00" ToType="Aerodrome" Level="MSL" LevelChange="B" />
+    <RhumbLineRoute To="N514604.00 E0131003.00" ToType="Aerodrome" Level="MSL" LevelChange="B" />
+    <WeightBalance>
+      <LoadingPoint Name="Main Fuel Tank" Weight="0.00" />
+      <LoadingPoint Name="Pilot" Weight="0.00" />
+      <LoadingPoint Name="Front Passenger" Weight="0.00" />
+      <LoadingPoint Name="Row 1 Left" Weight="0.00" />
+      <LoadingPoint Name="Row 1 Right" Weight="0.00" />
+      <LoadingPoint Name="Baggage" Weight="0.00" />
+      <LoadingPoint Name="Auxiliary Fuel Tank" Weight="0.00" />
+    </WeightBalance>
+    <ReferencedAirfields />
+  </PrimaryRoute>
+</DivelementsFlightPlanner>

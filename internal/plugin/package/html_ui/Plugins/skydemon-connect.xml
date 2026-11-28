@@ -1,0 +1,4 @@
+<Plugins>
+  <Plugin target="AS1000v2_MFD">coui://html_ui/SkyDemonConnect/G1000/route-plugin.js</Plugin>
+  <Plugin target="AS1000_MFD">coui://html_ui/SkyDemonConnect/G1000/route-plugin.js</Plugin>
+</Plugins>

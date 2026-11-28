@@ -62,7 +62,7 @@ func TestRunConsole(t *testing.T) {
 		c := flags(t, "-udp", conn.LocalAddr().String(), "-demo", "-demo-lat", "51",
 			"-demo-lon", "12")
 
-		go func() { done <- runConsole(ctx, c, &out, simconnect.Run, statusEvery) }()
+		go func() { done <- runConsole(ctx, c, &out, input{sim: simconnect.Run}, statusEvery) }()
 
 		time.Sleep(2 * statusEvery)
 		synctest.Wait()
