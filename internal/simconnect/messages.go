@@ -208,6 +208,10 @@ func (d *dispatcher) sim(running bool) {
 
 	if running {
 		d.log.Printf("simconnect: flight running")
+
+		// Asked for in the main menu, the airports may have come short or
+		// not at all: once a flight runs, MSFS has them.
+		d.airports.again(time.Now())
 	} else {
 		d.log.Printf("simconnect: no flight running (menu or loading)")
 	}

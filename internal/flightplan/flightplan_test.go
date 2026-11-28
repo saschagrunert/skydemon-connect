@@ -140,4 +140,14 @@ func TestParseErrors(t *testing.T) {
 			t.Errorf("%s: parsed", name)
 		}
 	}
+
+	// The bad point is numbered as a point of the route: the element
+	// without a To before it is no point.
+	doc := `<DivelementsFlightPlanner><PrimaryRoute Start="` + good + `"><WeightBalance/>` +
+		`<RhumbLineRoute To="X1" /></PrimaryRoute></DivelementsFlightPlanner>`
+
+	_, err := flightplan.Parse(strings.NewReader(doc))
+	if err == nil || !strings.HasPrefix(err.Error(), "point 1:") {
+		t.Errorf("error %v", err)
+	}
 }

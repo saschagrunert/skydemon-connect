@@ -286,3 +286,47 @@ func TestWriterClose(t *testing.T) {
 		}
 	})
 }
+
+// At a start before the airports came, a plan of the same route with its
+// codes is kept, not replaced by its positions.
+func TestWriterKeepsCodes(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, gtn.Name+".gfp")
+
+	err := os.WriteFile(path, []byte(exported), 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	w := gtn.New(dir, testutil.Log(t))
+	w.SetRoute(leipzigHolzdorf(t))
+
+	if b, _ := os.ReadFile(path); string(b) != exported {
+		t.Errorf("codes lost: %s", b)
+	}
+
+	// A short list, of some of its airports, keeps the codes too; the
+	// whole one writes them again.
+	w.SetAirports(simAirports()[:1])
+
+	if b, _ := os.ReadFile(path); string(b) != exported {
+		t.Errorf("codes lost to a short list: %s", b)
+	}
+
+	w.SetAirports(simAirports())
+
+	if b, _ := os.ReadFile(path); string(b) != exported {
+		t.Errorf("with the whole list %s", b)
+	}
+
+	// Another route is written, with the codes there are.
+	other := leipzigHolzdorf(t)
+	other.ID, other.Points = "other", other.Points[:2]
+	w.SetRoute(other)
+
+	if b, _ := os.ReadFile(path); string(b) != "FPN/RI:F:EDDP,N51254E012142:F:N51326E012116" {
+		t.Errorf("other route %s", b)
+	}
+}

@@ -55,6 +55,13 @@ func TestAirportList(t *testing.T) {
 
 	var state airportState
 
+	// Before a request, nothing is taken.
+	if got := state.add(msgAirports(airportsRequestID, 0, 1, 12, liph)); got != nil {
+		t.Fatalf("taken unasked: %+v", got)
+	}
+
+	state.ask(time.Now())
+
 	// The packets in any order; others' and broken ones are ignored.
 	for _, msg := range [][]byte{
 		msgAirports(airportsRequestID+1, 0, 2, 12, liph),
@@ -87,6 +94,7 @@ func TestAirportListOtherOutOf(t *testing.T) {
 
 	var state airportState
 
+	state.ask(time.Now())
 	state.add(msgAirports(airportsRequestID, 0, 2, 12, eddp))
 
 	if got := state.add(msgAirports(airportsRequestID, 0, 1, 12, liph)); got != nil {
@@ -203,4 +211,109 @@ func TestLoopAirportsFail(t *testing.T) {
 			t.Errorf("events %q, log:\n%s", r.String(), out.String())
 		}
 	})
+}
+
+// Asked in the main menu, a short list is asked for again once a flight
+// runs, not before; a whole one isn't.
+func TestLoopAirportsAgain(t *testing.T) {
+	t.Parallel()
+
+	eddp, _, liph := testAirports()
+
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(t.Context(), time.Hour)
+		defer cancel()
+
+		var (
+			r     recorder
+			lists []int
+			// atLive is how often the airports were asked for at each
+			// flight start.
+			atLive []int
+		)
+
+		asked := 0
+		c := &fakeConn{msgs: [][]byte{msgOpen(), msgEvent(eventSim, 0)}}
+		c.onAirports = func(c *fakeConn, request uint32) error {
+			asked++
+
+			switch asked {
+			case 1: // the menu's: short, then a while in the menu
+				c.msgs = append(c.msgs, msgAirports(request, 0, 1, 12, eddp),
+					msgEvent(eventSim, 0), msgEvent(eventSim, 0), msgEvent(eventSim, 1))
+			default:
+				many := make([]position.Airport, minAirports)
+				for i := range many {
+					many[i] = liph
+				}
+
+				c.msgs = append(c.msgs, msgAirports(request, 0, 1, 12, many...),
+					msgEvent(eventSim, 0), msgEvent(eventSim, 1), msgQuit())
+			}
+
+			return nil
+		}
+
+		h := r.handlers()
+		live := h.Live
+		h.Live = func(running bool) {
+			if running {
+				atLive = append(atLive, asked)
+			}
+
+			live(running)
+		}
+		h.Airports = func(a []position.Airport) { lists = append(lists, len(a)) }
+
+		loop(ctx, testutil.Log(t), opensOnce(c, cancel), h)
+
+		if asked != 2 || len(lists) != 2 || lists[0] != 1 || lists[1] != minAirports ||
+			len(atLive) != 2 || atLive[0] != 1 || atLive[1] != 2 {
+			t.Errorf("asked %d times, %v at the flight starts, lists %v", asked, atLive, lists)
+		}
+	})
+}
+
+// A request without an answer is asked again at a flight start once it
+// counts as lost.
+func TestAirportsLost(t *testing.T) {
+	t.Parallel()
+
+	var state airportState
+
+	now := time.Now()
+	state.ask(now)
+
+	state.again(now.Add(time.Second))
+
+	if !state.asked {
+		t.Error("asked again while the answer may come")
+	}
+
+	state.again(now.Add(airportsLost))
+
+	if state.asked {
+		t.Error("a lost request not asked again")
+	}
+
+	// Without a flight start, a few times; each request has its own ID,
+	// so that a late answer to a lost one isn't taken for the new one's.
+	for i := range maxLostAirports + 1 {
+		id := state.nextID()
+		state.ask(now)
+		state.retryLost(now.Add(airportsLost))
+
+		if state.asked != (i == maxLostAirports) {
+			t.Errorf("try %d: asked %v", i, state.asked)
+		}
+
+		if i > 0 && id == airportsRequestID {
+			t.Error("the same ID again")
+		}
+	}
+
+	_, eddp, _ := testAirports()
+	if state.add(msgAirports(airportsRequestID, 0, 1, 12, eddp)) != nil {
+		t.Error("an earlier request's answer taken")
+	}
 }

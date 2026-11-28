@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/saschagrunert/skydemon-connect/internal/feed"
-	"github.com/saschagrunert/skydemon-connect/internal/gtn"
 	"github.com/saschagrunert/skydemon-connect/internal/simconnect"
 	"github.com/saschagrunert/skydemon-connect/internal/testutil"
 )
@@ -183,7 +182,7 @@ func TestStartFeedRoutes(t *testing.T) {
 		c := flags(t, args...)
 		called := make(chan string, 1)
 
-		routes := func(ctx context.Context, c *config, _ *gtn.Writer, _ *log.Logger) {
+		routes := func(ctx context.Context, c *config, _ routeLinks, _ *log.Logger) {
 			called <- c.routes
 
 			<-ctx.Done()
@@ -210,3 +209,70 @@ func TestStartFeedRoutes(t *testing.T) {
 }
 
 func idleSim(ctx context.Context, _ *log.Logger, _ simconnect.Handlers) { <-ctx.Done() }
+
+// MSFS exited when the watched context is done, but not when its parent
+// is, e.g. by Ctrl+C in the console.
+func TestMSFSExited(t *testing.T) {
+	t.Parallel()
+
+	if msfsExited(t.Context(), t.Context(), false) != nil {
+		t.Error("not watched, yet a check")
+	}
+
+	parent, stop := context.WithCancel(t.Context())
+	watched, exit := context.WithCancel(parent)
+
+	exited := msfsExited(parent, watched, true)
+	if exited() {
+		t.Error("exited while running")
+	}
+
+	exit()
+
+	if !exited() {
+		t.Error("exit not seen")
+	}
+
+	stop()
+
+	if exited() {
+		t.Error("the console's end taken for MSFS's")
+	}
+}
+
+// newest never blocks, and hands on the last value sent.
+func TestNewest(t *testing.T) {
+	t.Parallel()
+
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
+
+		var (
+			work sync.WaitGroup
+			got  []int
+		)
+
+		block := make(chan struct{})
+		send := newest(ctx, &work, func(v int) {
+			<-block
+
+			got = append(got, v)
+		})
+
+		send(1) // being handed on, blocked
+		synctest.Wait()
+
+		for v := 2; v <= 5; v++ {
+			send(v) // each replacing the one before
+		}
+
+		close(block)
+		synctest.Wait()
+		cancel()
+		work.Wait()
+
+		if len(got) != 2 || got[0] != 1 || got[1] != 5 {
+			t.Errorf("handed on %v", got)
+		}
+	})
+}

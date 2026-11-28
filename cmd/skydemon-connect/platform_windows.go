@@ -162,6 +162,7 @@ func runTray(c *config, exe string) int {
 			sim:              simconnect.Run,
 			routes:           runRoutes,
 			airports:         nil,
+			msfsExited:       msfsExited(context.Background(), ctx, watched),
 			quitOnSessionEnd: sessionEndQuits(c.auto, watched),
 		},
 		l,

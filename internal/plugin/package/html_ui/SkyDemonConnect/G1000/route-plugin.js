@@ -198,7 +198,9 @@
         leg.lat = p.lat;
         leg.lon = p.lon;
       }
-      leg.altitude = altitude(route.levelFt);
+      // No altitude per leg: as a constraint at each fix up to the
+      // destination it would keep VNAV from planning a descent. The level
+      // is the cruise altitude only.
       r.enroute.push(leg);
     }
 
@@ -269,7 +271,10 @@
     }
     await fpl.calculate(0);
 
-    if (SimVar.GetSimVarValue("SIM ON GROUND", "bool") === 0) {
+    if (
+      SimVar.GetSimVarValue("SIM ON GROUND", "bool") === 0 &&
+      typeof fms.activateNearestLeg === "function"
+    ) {
       fms.activateNearestLeg();
     }
 

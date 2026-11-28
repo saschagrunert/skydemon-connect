@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/saschagrunert/skydemon-connect/internal/demo"
@@ -158,9 +159,43 @@ type input struct {
 	routes routesFunc
 	// airports, set by startFeed, receives the sim's airports.
 	airports func([]position.Airport)
+	// msfsExited reports whether the MSFS process that started the app
+	// exited; nil when it isn't watched.
+	msfsExited func() bool
 	// quitOnSessionEnd: the app exits when a SimConnect session ends,
 	// i.e. MSFS closed; see sessionEndQuits.
 	quitOnSessionEnd bool
+}
+
+// msfsExited reports, if watched, whether MSFS exited: ctx, watchMSFS's of
+// parent, is done, but not parent, e.g. by Ctrl+C in the console; else
+// nil.
+func msfsExited(parent, ctx context.Context, watched bool) func() bool {
+	if !watched {
+		return nil
+	}
+
+	return func() bool { return ctx.Err() != nil && parent.Err() == nil }
+}
+
+// linksOf are the routes' links to feed f and its input, and the quit
+// that the input calls as the session ends with MSFS, which quits the app.
+// The demo counts as connected, so that the GTN can be tried without MSFS.
+func linksOf(f *feed.Feed, c *config, src input, requestQuit func()) (routeLinks, func()) {
+	var ended atomic.Bool
+
+	links := routeLinks{
+		gtn: nil,
+		msfsClosed: func() bool {
+			return ended.Load() || (src.msfsExited != nil && src.msfsExited())
+		},
+		connected: func() bool { return c.demo || f.Status().Connected },
+	}
+
+	return links, func() {
+		ended.Store(true)
+		requestQuit()
+	}
 }
 
 // sessionEndQuits reports whether the app exits when a SimConnect session
@@ -191,10 +226,11 @@ func startFeed(parent context.Context, c *config, src input, l *log.Logger) (*ru
 
 	var wg, routes sync.WaitGroup
 
-	startRoutes(ctx, &routes, c, &src, l)
+	links, quitWithMSFS := linksOf(f, c, src, requestQuit)
+	startRoutes(ctx, &routes, c, &src, links, l)
 
 	wg.Go(func() { f.Run(ctx) })
-	wg.Go(func() { runInput(ctx, f, c, src, requestQuit, l) })
+	wg.Go(func() { runInput(ctx, f, c, src, quitWithMSFS, l) })
 
 	if c.spec.Dynamic() {
 		wg.Go(func() {
@@ -235,18 +271,59 @@ func startFeed(parent context.Context, c *config, src input, l *log.Logger) (*ru
 
 // startRoutes hands SkyDemon's routes to the avionics, unless -no-route,
 // and the sim's airports, which the GTN needs, to the GTN's writer.
-func startRoutes(ctx context.Context, work *sync.WaitGroup, c *config, src *input, l *log.Logger) {
+func startRoutes(
+	ctx context.Context,
+	work *sync.WaitGroup,
+	c *config,
+	src *input,
+	links routeLinks,
+	l *log.Logger,
+) {
 	if src.routes == nil || c.noRoute {
 		return
 	}
 
-	w := newGTN(os.Getenv("PROGRAMDATA"), l)
-	if w != nil {
-		// SimConnect's handlers must not block: the plan is written aside.
-		src.airports = func(a []position.Airport) { go w.SetAirports(a) }
+	links.gtn = newGTN(os.Getenv("PROGRAMDATA"), l)
+	if w := links.gtn; w != nil {
+		// SimConnect's handlers must not block, and a short list of
+		// airports must not land after a whole one.
+		src.airports = newest(ctx, work, w.SetAirports)
 	}
 
-	work.Go(func() { src.routes(ctx, c, w, l) })
+	work.Go(func() { src.routes(ctx, c, links, l) })
+}
+
+// newest returns a send that hands values to fn in order, on a goroutine
+// of work's, until ctx is done. It never blocks: a newer value replaces one
+// not handed on yet. One goroutine sends.
+func newest[T any](ctx context.Context, work *sync.WaitGroup, fn func(T)) func(T) {
+	pending := make(chan T, 1)
+
+	work.Go(func() {
+		for {
+			select {
+			case v := <-pending:
+				fn(v)
+			case <-ctx.Done():
+				return
+			}
+		}
+	})
+
+	return func(v T) {
+		for {
+			select {
+			case pending <- v:
+				return
+			default:
+				// Full: the older value goes, unless just received.
+				select {
+				case <-pending:
+				default:
+				}
+			}
+		}
+	}
 }
 
 func runInput(

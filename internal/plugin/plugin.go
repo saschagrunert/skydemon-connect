@@ -76,6 +76,9 @@ type Result struct {
 	// Outdated is whether an older package was left in place, as Install
 	// was told not to replace it.
 	Outdated bool
+	// Foreign is whether the package found there isn't SkyDemonConnect's,
+	// or is a link, and was left alone: what MSFS runs is unknown.
+	Foreign bool
 }
 
 // Install brings the package up to date in the Community folder named by
@@ -92,7 +95,9 @@ func Install(userDirs []string, version string, replace bool) []Result {
 	for _, dir := range userDirs {
 		community, err := communityFolder(dir)
 		if err != nil {
-			out = append(out, Result{Community: "", Err: err, Changed: false, Outdated: false})
+			out = append(out, Result{
+				Community: "", Err: err, Changed: false, Outdated: false, Foreign: false,
+			})
 
 			continue
 		}
@@ -231,6 +236,7 @@ func installInto(community, version string, update bool) Result {
 	switch {
 	case err != nil:
 		r.Err = err
+		r.Foreign = errors.Is(err, errNotOurs) || errors.Is(err, errLinked)
 	case state == current:
 	case state == older && !update:
 		r.Outdated = true
@@ -243,13 +249,36 @@ func installInto(community, version string, update bool) Result {
 
 var errNotDir = errors.New("is not a folder")
 
+// leftoverAge is how old what an install left must be to be removed: a
+// younger one may be another copy's at work, e.g. of another Windows user
+// sharing the packages folder.
+const leftoverAge = 10 * time.Minute
+
 // removeLeftovers removes what an install that failed halfway left in
 // community, e.g. an old package whose files MSFS held open.
 func removeLeftovers(community string) {
 	leftovers, _ := filepath.Glob(filepath.Join(community, "."+Name+"-new-*"))
 	for _, p := range leftovers {
-		_ = os.RemoveAll(p)
+		info, err := os.Lstat(p)
+
+		switch {
+		case err != nil || time.Since(info.ModTime()) < leftoverAge:
+		case info.Mode().Type() == fs.ModeDir:
+			removePackage(p)
+		default:
+			// Not ours, e.g. a link planted under the name: only it goes,
+			// what it points to stays.
+			_ = os.Remove(p)
+		}
 	}
+}
+
+// removePackage removes the package in dir, its manifest first: should the
+// rest fail, e.g. with MSFS holding a file, what is left is no package
+// MSFS loads next to the installed one.
+func removePackage(dir string) {
+	_ = os.Remove(filepath.Join(dir, "manifest.json"))
+	_ = os.RemoveAll(dir)
 }
 
 // packageState is what a Community folder holds of the package.
@@ -306,7 +335,7 @@ func replace(community, target string, content map[string][]byte, version string
 		return fmt.Errorf("install: %w", err)
 	}
 
-	defer func() { _ = os.RemoveAll(tmp) }()
+	defer removePackage(tmp)
 
 	err = write(tmp, content, version)
 	if err != nil {
@@ -325,19 +354,26 @@ func replace(community, target string, content map[string][]byte, version string
 		if err != nil {
 			return fmt.Errorf("replace %s (is MSFS running?): %w", target, err)
 		}
+
+		// Renamed, it keeps its time: another copy would take it for a
+		// leftover while it may still be put back.
+		now := time.Now()
+		_ = os.Chtimes(old, now, now)
 	}
 
 	err = os.Rename(tmp, target)
 	if err != nil {
-		if old != "" {
-			_ = os.Rename(old, target)
+		// Put back, or else no package: kept whole under its name, it
+		// would be loaded next to the one the next start installs.
+		if old != "" && os.Rename(old, target) != nil {
+			_ = os.Remove(filepath.Join(old, "manifest.json"))
 		}
 
 		return fmt.Errorf("install %s: %w", target, err)
 	}
 
 	if old != "" {
-		_ = os.RemoveAll(old)
+		removePackage(old)
 	}
 
 	return nil
