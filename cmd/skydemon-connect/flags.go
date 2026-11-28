@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -39,6 +40,8 @@ var (
 	errDemoPlace   = errors.New("-demo-lat and -demo-lon only work with -demo")
 	errTestTraffic = errors.New("-test-traffic doesn't work with -no-traffic")
 	errTrafficUDP  = errors.New("-test-traffic needs UDP: NMEA has no traffic")
+	errRoutes      = errors.New("-routes doesn't work with -no-route")
+	errRoutesPath  = errors.New(`-routes must be a full path, e.g. D:\SkyDemon\Routes`)
 	errName        = fmt.Errorf(
 		"-name must be 1 to %d printable ASCII characters, no commas",
 		maxName,
@@ -54,12 +57,15 @@ type config struct {
 	// MSFS starts the app as it was started now, e.g. "-name=My Sim".
 	passOn    []string
 	name, com string
+	// routes is -routes, SkyDemon's own Routes folder when "".
+	routes string
 	// baud is -baud, checked.
 	baud             uint32
 	demoLat, demoLon float64
 	noAttitude, demo bool
 	noTraffic        bool
 	testTraffic      bool
+	noRoute          bool
 	quiet, console   bool
 	auto             bool
 	version          bool
@@ -141,6 +147,10 @@ func define(fs *flag.FlagSet, c *config, opts *given) map[string]bool {
 	fs.BoolVar(&c.noAttitude, "no-xatt", false, "don't send XATT attitude messages")
 	fs.BoolVar(&c.noTraffic, "no-traffic", false,
 		"don't send the aircraft around yours (XTRAFFIC) over UDP")
+	fs.BoolVar(&c.noRoute, "no-route", false,
+		"don't hand the route last saved in SkyDemon to the G1000, nor install its plugin")
+	fs.StringVar(&c.routes, "routes", "",
+		`folder SkyDemon saves its routes to, if not its own "SkyDemon\Routes" in Documents`)
 	fs.StringVar(&c.name, "name", "MSFS",
 		"simulator name in the ForeFlight messages, up to "+strconv.Itoa(maxName)+
 			" ASCII characters, no commas")
@@ -202,16 +212,35 @@ func validate(c *config, opts *given) error {
 		return errQuiet
 	case !validName(c.name):
 		return errName
-	case c.testTraffic && c.noTraffic:
-		return errTestTraffic
 	}
 
-	err := validateDemo(c, opts)
+	err := validateFeatures(c)
+	if err != nil {
+		return err
+	}
+
+	err = validateDemo(c, opts)
 	if err != nil {
 		return err
 	}
 
 	return validateOutputs(c, opts)
+}
+
+// validateFeatures checks the options that turn features on and off.
+func validateFeatures(c *config) error {
+	switch {
+	case c.testTraffic && c.noTraffic:
+		return errTestTraffic
+	case c.routes != "" && c.noRoute:
+		return errRoutes
+	// MSFS starts the exe in its own folder: a relative path would point
+	// elsewhere then.
+	case c.routes != "" && !filepath.IsAbs(c.routes):
+		return errRoutesPath
+	}
+
+	return nil
 }
 
 // validateDemo checks -demo-lat and -demo-lon.

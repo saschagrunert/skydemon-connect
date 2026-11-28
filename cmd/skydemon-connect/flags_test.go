@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"flag"
+	"path/filepath"
 	"runtime"
 	"slices"
 	"strings"
@@ -71,6 +72,8 @@ func TestParseFlagsValidates(t *testing.T) {
 		{errDemoPlace, []string{"-demo-lon", "10"}},
 		{errTestTraffic, []string{"-test-traffic", "-no-traffic"}},
 		{errTrafficUDP, []string{"-test-traffic", "-udp=", "-com", "COM11"}},
+		{errRoutes, []string{"-routes", `D:\Routes`, "-no-route"}},
+		{errRoutesPath, []string{"-routes", `Routes`}},
 	} {
 		_, usage, err := parseFlags(tc.args)
 		if !errors.Is(err, tc.want) ||
@@ -152,9 +155,10 @@ func TestPassOn(t *testing.T) {
 		t.Errorf("passOn %q, want %q", c.passOn, want)
 	}
 
-	c = flags(t, "-no-traffic")
+	routes := filepath.Join(t.TempDir(), "My Routes")
+	c = flags(t, "-no-traffic", "-routes", routes)
 
-	want = []string{`-no-traffic=true`}
+	want = []string{`-no-traffic=true`, `-routes=` + routes}
 	if !slices.Equal(c.passOn, want) {
 		t.Errorf("passOn %q, want %q", c.passOn, want)
 	}

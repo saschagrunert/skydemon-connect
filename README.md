@@ -8,7 +8,8 @@ Flight Simulator 2024 (MSFS). Simulator bridges usually send one position
 per second, so the aircraft jumps; SkyDemonConnect sends 30 per second, to
 SkyDemon on the same PC and to tablets and phones on your network. It is a
 single `.exe` in the system tray that can start and stop with MSFS. Other
-aircraft around you show up as traffic, too.
+aircraft around you show up as traffic, too, and the route you save in
+SkyDemon [lands in the G1000](docs/reference.md#skydemon-routes-in-the-g1000).
 
 ## Install
 
@@ -31,7 +32,8 @@ aircraft around you show up as traffic, too.
    unsigned apps; the only way around it is to turn it off (Windows Security
    → App & browser control). Recent Windows 11 updates can turn it back on
    there, older ones only by reinstalling Windows. If Windows Firewall asks,
-   either answer works: SkyDemonConnect only sends.
+   either answer works: SkyDemonConnect only sends, and listens only for the
+   G1000 on this PC.
 5. In SkyDemon, on the PC or a tablet: **Go Flying → Connect to X-Plane**.
 6. Check it works: start a flight in MSFS. The tray icon turns green, its
    tooltip shows altitude, speed and track, and SkyDemon shows the aircraft
@@ -85,8 +87,9 @@ already has the option; leave it alone, as a click removes the entry.
   [Tablets and phones](#tablets-and-phones).
 
 The tray menu, starting with MSFS (and adding it to MSFS's `exe.xml` by
-hand), the demo, traffic, all options, updating and uninstalling are
-described in [docs/reference.md](docs/reference.md).
+hand), the demo, traffic, SkyDemon routes in the G1000, all options,
+updating and uninstalling are described in
+[docs/reference.md](docs/reference.md).
 
 ## License
 

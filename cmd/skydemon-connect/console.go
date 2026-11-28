@@ -87,7 +87,7 @@ func runConsoleUntilInterrupt(c *config, out io.Writer) error {
 		<-done
 	})
 
-	err := runConsole(ctx, c, out, simconnect.Run, statusEvery)
+	err := runConsole(ctx, c, out, input{sim: simconnect.Run, routes: runRoutes}, statusEvery)
 
 	close(done)
 
@@ -101,7 +101,7 @@ func runConsole(
 	ctx context.Context,
 	c *config,
 	out io.Writer,
-	sim simFunc,
+	src input,
 	every time.Duration,
 ) error {
 	status := &statusLine{out: out}
@@ -118,7 +118,11 @@ func runConsole(
 	r, err := startFeed(
 		ctx,
 		c,
-		input{sim: sim, quitOnSessionEnd: sessionEndQuits(c.auto, watched)},
+		input{
+			sim:              src.sim,
+			routes:           src.routes,
+			quitOnSessionEnd: sessionEndQuits(c.auto, watched),
+		},
 		l,
 	)
 	if err != nil {

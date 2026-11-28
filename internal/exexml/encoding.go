@@ -118,6 +118,10 @@ func decode(b []byte) (string, encoding, error) {
 	return bytesToRunes(b), bytewise, nil
 }
 
+// Decode1252 reads b as Windows-1252, the ANSI code page of western
+// Windows, in which MSFS may write its settings.
+func Decode1252(b []byte) string { return decode1252(b) }
+
 // decode1252 maps each byte to its Windows-1252 character, which encode
 // maps back.
 func decode1252(b []byte) string {

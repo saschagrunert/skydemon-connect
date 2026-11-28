@@ -21,6 +21,10 @@ import (
 
 const (
 	shutdownWait = 2 * time.Second
+	// How long the end waits for the routes, whose plugin may be
+	// updated once MSFS is gone: longer than the rest, as a package cut
+	// off halfway is missing at MSFS's next start.
+	routesWait = 10 * time.Second
 	// How often "auto" UDP targets and host names follow network changes
 	// (Wi-Fi reconnects, a laptop changing networks, a tablet's new
 	// address).
@@ -65,6 +69,22 @@ func (o *outputs) shutdown(work *sync.WaitGroup, l *log.Logger) {
 	}
 
 	closeQuietly(o.UDP)
+}
+
+// waitFor waits until work is done, at most for wait.
+func waitFor(work *sync.WaitGroup, wait time.Duration, what string, l *log.Logger) {
+	done := make(chan struct{})
+
+	go func() {
+		work.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(wait):
+		l.Printf("shutdown: gave up waiting for the %s", what)
+	}
 }
 
 // closeQuietly closes w if it is open; at shutdown there is nobody to tell
@@ -131,6 +151,9 @@ type simFunc func(ctx context.Context, l *log.Logger, h simconnect.Handlers)
 // input is where positions come from.
 type input struct {
 	sim simFunc
+	// routes hands SkyDemon's routes to the G1000 until its context is
+	// done; nil leaves them alone.
+	routes routesFunc
 	// quitOnSessionEnd: the app exits when a SimConnect session ends,
 	// i.e. MSFS closed; see sessionEndQuits.
 	quitOnSessionEnd bool
@@ -162,10 +185,14 @@ func startFeed(parent context.Context, c *config, src input, l *log.Logger) (*ru
 	// quit is done when parent is, or when the feed asks to quit.
 	quit, requestQuit := context.WithCancel(parent)
 
-	var wg sync.WaitGroup
+	var wg, routes sync.WaitGroup
 
 	wg.Go(func() { f.Run(ctx) })
 	wg.Go(func() { runInput(ctx, f, c, src, requestQuit, l) })
+
+	if src.routes != nil && !c.noRoute {
+		routes.Go(func() { src.routes(ctx, c, l) })
+	}
 
 	if c.spec.Dynamic() {
 		wg.Go(func() {
@@ -178,6 +205,7 @@ func startFeed(parent context.Context, c *config, src input, l *log.Logger) (*ru
 		cancel()
 		requestQuit()
 		outs.shutdown(&wg, l)
+		waitFor(&routes, routesWait, "routes", l)
 	})
 
 	destinations := func() []string {
