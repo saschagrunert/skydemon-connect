@@ -161,6 +161,7 @@ func runTray(c *config, exe string) int {
 		input{
 			sim:              simconnect.Run,
 			routes:           runRoutes,
+			airports:         nil,
 			quitOnSessionEnd: sessionEndQuits(c.auto, watched),
 		},
 		l,

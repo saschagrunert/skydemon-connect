@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/saschagrunert/skydemon-connect/internal/feed"
+	"github.com/saschagrunert/skydemon-connect/internal/gtn"
 	"github.com/saschagrunert/skydemon-connect/internal/simconnect"
 	"github.com/saschagrunert/skydemon-connect/internal/testutil"
 )
@@ -182,7 +183,7 @@ func TestStartFeedRoutes(t *testing.T) {
 		c := flags(t, args...)
 		called := make(chan string, 1)
 
-		routes := func(ctx context.Context, c *config, _ *log.Logger) {
+		routes := func(ctx context.Context, c *config, _ *gtn.Writer, _ *log.Logger) {
 			called <- c.routes
 
 			<-ctx.Done()

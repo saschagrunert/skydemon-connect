@@ -8,12 +8,30 @@ import (
 	"time"
 
 	"github.com/saschagrunert/skydemon-connect/internal/exexml"
+	"github.com/saschagrunert/skydemon-connect/internal/gtn"
 	"github.com/saschagrunert/skydemon-connect/internal/plugin"
 	"github.com/saschagrunert/skydemon-connect/internal/routeserver"
 )
 
-// routesFunc hands SkyDemon's routes to the G1000 until ctx is done.
-type routesFunc func(ctx context.Context, c *config, l *log.Logger)
+// routesFunc hands SkyDemon's routes to the avionics until ctx is done:
+// to the G1000 and, if w isn't nil, to the TDS GTNXi.
+type routesFunc func(ctx context.Context, c *config, w *gtn.Writer, l *log.Logger)
+
+// routeCheck is how often a newly saved route is looked for, for the GTN.
+const routeCheck = 2 * time.Second
+
+// newGTN is the writer of flight plans for the TDS GTNXi installed below
+// programData, nil without one.
+func newGTN(programData string, l *log.Logger) *gtn.Writer {
+	dir := gtn.Folder(programData)
+	if dir == "" {
+		return nil
+	}
+
+	l.Printf("route: routes go to the TDS GTNXi too, as %s in %s", gtn.Name, dir)
+
+	return gtn.New(dir, l)
+}
 
 const (
 	// pluginRetry is how often an update of the plugin that waits for MSFS
@@ -38,9 +56,9 @@ type routeEnv struct {
 	retry, exitWait time.Duration
 }
 
-// runRoutes brings the plugin up to date in each MSFS 2024 installation
-// and serves the route last saved in SkyDemon to it.
-func runRoutes(ctx context.Context, c *config, l *log.Logger) {
+// runRoutes brings the plugin up to date in each MSFS 2024 installation,
+// serves the route last saved in SkyDemon to it and writes it for the GTN.
+func runRoutes(ctx context.Context, c *config, w *gtn.Writer, l *log.Logger) {
 	env := routeEnv{
 		installs: exexml.Find(),
 		running:  msfsRunning,
@@ -54,11 +72,15 @@ func runRoutes(ctx context.Context, c *config, l *log.Logger) {
 		env.exitWait = msfsExitWait
 	}
 
-	runRoutesWith(ctx, c, l, env)
+	runRoutesWith(ctx, c, w, l, env)
 }
 
-func runRoutesWith(ctx context.Context, c *config, l *log.Logger, env routeEnv) {
+func runRoutesWith(ctx context.Context, c *config, w *gtn.Writer, l *log.Logger, env routeEnv) {
 	var wg sync.WaitGroup
+
+	if w != nil {
+		defer w.Close() // after wg.Wait, deferred below: Watch writes no more
+	}
 
 	if installPlugin(env.installs, l, !env.running()) {
 		wg.Go(func() { updatePluginLater(ctx, l, env) })
@@ -80,7 +102,13 @@ func runRoutesWith(ctx context.Context, c *config, l *log.Logger, env routeEnv) 
 
 	l.Printf("route: routes saved in %s go to the G1000", dir)
 
-	err := routeserver.New(dir, plugin.ID(), l).RunOn(ctx, env.addr)
+	srv := routeserver.New(dir, plugin.ID(), l)
+
+	if w != nil {
+		wg.Go(func() { srv.Watch(ctx, routeCheck, w.SetRoute) })
+	}
+
+	err := srv.RunOn(ctx, env.addr)
 	if err != nil {
 		// Another copy running, most likely, which serves them already.
 		l.Printf("route: %v", err)

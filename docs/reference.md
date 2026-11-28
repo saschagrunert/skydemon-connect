@@ -1,8 +1,8 @@
 # SkyDemonConnect in detail
 
 What the [README](../README.md) leaves out: the tray menu, starting with
-MSFS, the demo, traffic, SkyDemon routes in the G1000, updating, all options
-and how to build it.
+MSFS, the demo, traffic, SkyDemon routes in the G1000 and the TDS GTNXi,
+updating, all options and how to build it.
 
 ## Tray icon
 
@@ -134,10 +134,25 @@ runs from the next start on. Until then the MFD says to restart MSFS.
 A route planned on a tablet reaches the G1000 once it is opened and saved in
 SkyDemon on the PC.
 
-`-no-route` turns all of this off and leaves the plugin alone. To remove the
-plugin, delete the `skydemon-connect-plugin` folder from the Community folder
-while MSFS is closed, and start SkyDemonConnect with `-no-route` from then
-on; otherwise it installs the plugin again.
+`-no-route` turns all of this off, also for the GTN below, and leaves the
+plugin alone. To remove the plugin, delete the `skydemon-connect-plugin`
+folder from the Community folder while MSFS is closed, and start
+SkyDemonConnect with `-no-route` from then on; otherwise it installs the
+plugin again.
+
+### TDS GTNXi
+
+With the [TDS GTNXi](https://www.tdssim.com) installed, the saved route also
+goes to its flight plan folder, `%PROGRAMDATA%\TDS\GTNXi\FPL`, as
+`SKYDEMON.gfp`, replaced with each newly saved route. On the GTN, open the
+flight plan catalog and choose **Menu → Import → SKYDEMON**. If it isn't
+listed, restart the GTN: some versions read the folder only when they start.
+
+The airport codes come from MSFS: SkyDemonConnect asks it for every airport
+of the world once it connects, and each of SkyDemon's aerodromes becomes the
+one within 1 NM, as for the G1000. Until MSFS has answered, a few seconds
+after it connected, the plan holds positions only, and it is written again
+with the codes then. The log says which (`route: … for the GTN`).
 
 ## Update and uninstall
 
@@ -167,7 +182,7 @@ target; `-help` lists them. Quote comma-separated lists in PowerShell, e.g.
 | `-baud`         | 115200  | COM port baud rate (with `-com`)                                                     |
 | `-no-xatt`      | off     | don't send attitude messages                                                         |
 | `-no-traffic`   | off     | don't send the aircraft around yours                                                 |
-| `-no-route`     | off     | don't hand SkyDemon routes to the G1000, nor install its plugin                      |
+| `-no-route`     | off     | don't hand SkyDemon routes to the G1000 and the GTN, nor install the plugin          |
 | `-routes`       |         | full path of the folder SkyDemon saves routes to, if not `Documents\SkyDemon\Routes` |
 | `-name`         | MSFS    | simulator name in the messages, up to 32 ASCII characters, no commas                 |
 | `-demo`         | off     | fly a 100 kt circle without MSFS                                                     |

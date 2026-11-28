@@ -186,6 +186,29 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// Watch calls changed with the newest route whenever it changes, looking
+// every interval, until ctx is done. A route gone, e.g. deleted, is no
+// change: what was handed on stays.
+func (s *Server) Watch(ctx context.Context, every time.Duration, changed func(*Route)) {
+	tick := time.NewTicker(every)
+	defer tick.Stop()
+
+	last := ""
+
+	for {
+		if r := s.current(); r != nil && r.ID != last {
+			last = r.ID
+			changed(r)
+		}
+
+		select {
+		case <-ctx.Done():
+			return
+		case <-tick.C:
+		}
+	}
+}
+
 // allowOrigin lets the plugin, on a coui:// page of the sim, read the
 // answer, and no web page in a browser. A refused origin is logged once:
 // should the sim's ever change, the log tells.
@@ -258,7 +281,7 @@ func (s *Server) current() *Route {
 
 	if s.route != nil && s.route.ID != s.served {
 		s.served = s.route.ID
-		s.log.Printf("route: %q, %d points, for the G1000", s.route.Name, len(s.route.Points))
+		s.log.Printf("route: %q, %d points", s.route.Name, len(s.route.Points))
 	}
 
 	return s.route

@@ -86,6 +86,8 @@ type dispatcher struct {
 	badData bool
 	// badTraffic is badData for the traffic definition.
 	badTraffic bool
+	// airports collects the airport list.
+	airports airportState
 }
 
 // handle processes one message and reports whether the sim quit.
@@ -113,13 +115,27 @@ func (d *dispatcher) handle(buf []byte) bool {
 		d.event(buf)
 	case recvException:
 		d.exception(buf)
+	default:
+		d.answer(binary.LittleEndian.Uint32(buf[recvIDOffset:]), buf)
+	}
+
+	return false
+}
+
+// answer handles the answers to requests: positions, traffic, airports.
+func (d *dispatcher) answer(id uint32, buf []byte) {
+	switch id {
 	case recvSimobjectData:
 		d.data(buf)
 	case recvSimobjectDataByType:
 		d.trafficData(buf)
+	case recvAirportList:
+		all := d.airports.add(buf)
+		if all != nil && d.h.Airports != nil {
+			d.log.Printf("simconnect: %d airports", len(all))
+			d.h.Airports(all)
+		}
 	}
-
-	return false
 }
 
 // data handles a SIMCONNECT_RECV_SIMOBJECT_DATA. A block too short for

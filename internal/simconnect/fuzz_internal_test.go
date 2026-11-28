@@ -17,6 +17,7 @@ func FuzzHandle(f *testing.F) {
 		msgException(7), goldenData(&testing.T{}),
 		msgTraffic(firstAircraft, 1, 1, 1, trafficBlock(&testing.T{}, trafficFloats(), "X")),
 		msgTraffic(firstHelicopters, 0, 0, 0, nil),
+		msgAirports(airportsRequestID, 0, 1, 12, position.Airport{Ident: "EDDP", Lat: 51, Lon: 12}),
 		{},
 		{1, 2, 3},
 	} {
@@ -33,6 +34,7 @@ func FuzzHandle(f *testing.F) {
 				Ended:     func() {},
 				Failed:    func(error) {},
 				Traffic:   func([]position.Traffic) {},
+				Airports:  func([]position.Airport) {},
 			},
 		}
 

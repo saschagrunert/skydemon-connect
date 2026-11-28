@@ -6,6 +6,7 @@ import (
 	"io"
 	"log"
 	"net"
+	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -14,6 +15,7 @@ import (
 	"github.com/saschagrunert/skydemon-connect/internal/demo"
 	"github.com/saschagrunert/skydemon-connect/internal/feed"
 	"github.com/saschagrunert/skydemon-connect/internal/foreflight"
+	"github.com/saschagrunert/skydemon-connect/internal/position"
 	"github.com/saschagrunert/skydemon-connect/internal/serial"
 	"github.com/saschagrunert/skydemon-connect/internal/simconnect"
 	"github.com/saschagrunert/skydemon-connect/internal/targets"
@@ -151,9 +153,11 @@ type simFunc func(ctx context.Context, l *log.Logger, h simconnect.Handlers)
 // input is where positions come from.
 type input struct {
 	sim simFunc
-	// routes hands SkyDemon's routes to the G1000 until its context is
+	// routes hands SkyDemon's routes to the avionics until its context is
 	// done; nil leaves them alone.
 	routes routesFunc
+	// airports, set by startFeed, receives the sim's airports.
+	airports func([]position.Airport)
 	// quitOnSessionEnd: the app exits when a SimConnect session ends,
 	// i.e. MSFS closed; see sessionEndQuits.
 	quitOnSessionEnd bool
@@ -187,12 +191,10 @@ func startFeed(parent context.Context, c *config, src input, l *log.Logger) (*ru
 
 	var wg, routes sync.WaitGroup
 
+	startRoutes(ctx, &routes, c, &src, l)
+
 	wg.Go(func() { f.Run(ctx) })
 	wg.Go(func() { runInput(ctx, f, c, src, requestQuit, l) })
-
-	if src.routes != nil && !c.noRoute {
-		routes.Go(func() { src.routes(ctx, c, l) })
-	}
 
 	if c.spec.Dynamic() {
 		wg.Go(func() {
@@ -231,6 +233,22 @@ func startFeed(parent context.Context, c *config, src input, l *log.Logger) (*ru
 	return &running{feed: f, quit: quit.Done(), stop: stop, destinations: destinations}, nil
 }
 
+// startRoutes hands SkyDemon's routes to the avionics, unless -no-route,
+// and the sim's airports, which the GTN needs, to the GTN's writer.
+func startRoutes(ctx context.Context, work *sync.WaitGroup, c *config, src *input, l *log.Logger) {
+	if src.routes == nil || c.noRoute {
+		return
+	}
+
+	w := newGTN(os.Getenv("PROGRAMDATA"), l)
+	if w != nil {
+		// SimConnect's handlers must not block: the plan is written aside.
+		src.airports = func(a []position.Airport) { go w.SetAirports(a) }
+	}
+
+	work.Go(func() { src.routes(ctx, c, w, l) })
+}
+
 func runInput(
 	ctx context.Context,
 	f *feed.Feed,
@@ -257,8 +275,9 @@ func runInput(
 				quit()
 			}
 		},
-		Failed:  f.SetError,
-		Traffic: nil,
+		Failed:   f.SetError,
+		Traffic:  nil,
+		Airports: src.airports,
 	}
 
 	// -test-traffic replaces the sim's traffic, which only goes over UDP.

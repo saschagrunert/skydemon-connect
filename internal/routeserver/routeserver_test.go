@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/saschagrunert/skydemon-connect/internal/routeserver"
@@ -112,7 +113,7 @@ func TestNewestRoute(t *testing.T) {
 		t.Errorf("ID changed to %q", again.ID)
 	}
 
-	if n := strings.Count(out.String(), "for the G1000"); n != 1 {
+	if n := strings.Count(out.String(), `"Padova - TrevisoS.Angelo", 2 points`); n != 1 {
 		t.Errorf("logged %d times:\n%s", n, out.String())
 	}
 
@@ -401,4 +402,41 @@ func TestRun(t *testing.T) {
 	if err != nil {
 		t.Error(err)
 	}
+}
+
+func TestWatch(t *testing.T) {
+	t.Parallel()
+
+	synctest.Test(t, func(t *testing.T) {
+		dir := t.TempDir()
+		now := time.Now()
+
+		s := routeserver.New(dir, plugin, testutil.Log(t))
+
+		var got []string
+
+		ctx, cancel := context.WithCancel(t.Context())
+		done := make(chan struct{})
+
+		go func() {
+			s.Watch(ctx, time.Second, func(r *routeserver.Route) { got = append(got, r.Name) })
+			close(done)
+		}()
+
+		// None yet, then one, the same again, then another.
+		time.Sleep(1500 * time.Millisecond)
+		copyRoute(t, dir, "LeipzigHalle - Holzdorf.flightplan", now)
+		time.Sleep(2 * time.Second)
+		copyRoute(t, dir, "Padova - TrevisoS.Angelo.flightplan", now.Add(time.Minute))
+		time.Sleep(time.Second)
+		synctest.Wait()
+
+		cancel()
+		<-done
+
+		want := "LeipzigHalle - Holzdorf,Padova - TrevisoS.Angelo"
+		if strings.Join(got, ",") != want {
+			t.Errorf("changed %q, want %q", got, want)
+		}
+	})
 }

@@ -12,7 +12,9 @@ import (
 	"time"
 
 	"github.com/saschagrunert/skydemon-connect/internal/exexml"
+	"github.com/saschagrunert/skydemon-connect/internal/gtn"
 	"github.com/saschagrunert/skydemon-connect/internal/plugin"
+	"github.com/saschagrunert/skydemon-connect/internal/position"
 	"github.com/saschagrunert/skydemon-connect/internal/testutil"
 )
 
@@ -67,6 +69,9 @@ func testEnv(installs exexml.Installs, running func() bool) routeEnv {
 	}
 }
 
+// notRunning is MSFS closed.
+func notRunning() bool { return false }
+
 // oldPlugin makes an MSFS installation with an older plugin and returns it
 // and the plugin's script.
 func oldPlugin(t *testing.T) (exexml.Installs, string) {
@@ -117,7 +122,7 @@ func TestUpdatePluginLater(t *testing.T) {
 		done := make(chan struct{})
 
 		go func() {
-			runRoutesWith(ctx, c, testutil.Log(t), testEnv(installs, running.Load))
+			runRoutesWith(ctx, c, nil, testutil.Log(t), testEnv(installs, running.Load))
 			close(done)
 		}()
 
@@ -168,7 +173,7 @@ func TestUpdatePluginRetries(t *testing.T) {
 	done := make(chan struct{})
 
 	go func() {
-		runRoutesWith(ctx, c, log.New(&out, "", 0), testEnv(installs, func() bool { return false }))
+		runRoutesWith(ctx, c, nil, log.New(&out, "", 0), testEnv(installs, notRunning))
 		close(done)
 	}()
 
@@ -199,7 +204,7 @@ func TestRunRoutes(t *testing.T) {
 	defer cancel()
 
 	c := flags(t, "-routes", t.TempDir())
-	runRoutesWith(ctx, c, log.New(&out, "", 0), testEnv(nil, func() bool { return false }))
+	runRoutesWith(ctx, c, nil, log.New(&out, "", 0), testEnv(nil, notRunning))
 
 	if !strings.Contains(out.String(), "route: routes saved in "+c.routes+" go to the G1000") ||
 		strings.Contains(out.String(), "listen") {
@@ -224,5 +229,57 @@ func TestGone(t *testing.T) {
 
 	if gone(func() bool { return true }, 5*time.Millisecond, time.Millisecond) {
 		t.Error("still running, yet gone")
+	}
+}
+
+// With the TDS GTNXi, a saved route is written for it, also when another
+// copy serves the G1000.
+func TestRunRoutesGTN(t *testing.T) {
+	t.Parallel()
+
+	programData, routes := t.TempDir(), t.TempDir()
+	fpl := filepath.Join(programData, "TDS", "GTNXi", "FPL")
+
+	err := os.MkdirAll(fpl, 0o700)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	b, err := os.ReadFile("../../internal/flightplan/testdata/Padova - TrevisoS.Angelo.flightplan")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = os.WriteFile(filepath.Join(routes, "Padova - TrevisoS.Angelo.flightplan"), b, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var out testutil.Buffer
+
+	l := log.New(&out, "", 0)
+
+	if newGTN(t.TempDir(), l) != nil {
+		t.Error("a GTN without the TDS GTNXi")
+	}
+
+	w := newGTN(programData, l)
+	if w == nil {
+		t.Fatal("no GTN")
+	}
+
+	w.SetAirports([]position.Airport{
+		{Ident: "LIPU", Lat: 45.3958, Lon: 11.8478},
+		{Ident: "LIPH", Lat: 45.6484, Lon: 12.1944},
+	})
+
+	ctx, cancel := context.WithTimeout(t.Context(), 500*time.Millisecond)
+	defer cancel()
+
+	runRoutesWith(ctx, flags(t, "-routes", routes), w, l, testEnv(nil, notRunning))
+
+	got, err := os.ReadFile(filepath.Join(fpl, gtn.Name+".gfp"))
+	if err != nil || string(got) != "FPN/RI:F:LIPU,N45238E011509:F:LIPH,N45390E012119" {
+		t.Errorf("plan %q, %v\n%s", got, err, out.String())
 	}
 }
