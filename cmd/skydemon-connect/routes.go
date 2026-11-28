@@ -13,9 +13,17 @@ import (
 	"github.com/saschagrunert/skydemon-connect/internal/routeserver"
 )
 
-// routesFunc hands SkyDemon's routes to the avionics until ctx is done:
-// to the G1000 and, if w isn't nil, to the TDS GTNXi.
-type routesFunc func(ctx context.Context, c *config, w *gtn.Writer, l *log.Logger)
+// routesFunc hands SkyDemon's routes to the avionics until ctx is done.
+type routesFunc func(ctx context.Context, c *config, links routeLinks, l *log.Logger)
+
+// routeLinks are what the routes need of the rest of the app.
+type routeLinks struct {
+	// gtn writes the route for the TDS GTNXi, nil without one.
+	gtn *gtn.Writer
+	// msfsClosed reports whether the app stops because MSFS closed, and
+	// connected whether a session with MSFS is up.
+	msfsClosed, connected func() bool
+}
 
 // routeCheck is how often a newly saved route is looked for, for the GTN.
 const routeCheck = 2 * time.Second
@@ -39,7 +47,7 @@ const (
 	// once MSFS is closed.
 	pluginRetry = 30 * time.Second
 	pluginTries = 10
-	// msfsExitWait is how long the end of an -auto start waits for MSFS to
+	// msfsExitWait is how long the end, as MSFS closed, waits for MSFS to
 	// be gone, to update the plugin: an app not watching MSFS quits with
 	// the session, while MSFS is still closing. Less than routesWait.
 	msfsExitWait = 8 * time.Second
@@ -52,38 +60,39 @@ type routeEnv struct {
 	running  func() bool
 	// addr is where the route server listens.
 	addr string
-	// retry is pluginRetry, exitWait msfsExitWait or, without -auto, 0.
+	// retry is pluginRetry, exitWait msfsExitWait.
 	retry, exitWait time.Duration
 }
 
 // runRoutes brings the plugin up to date in each MSFS 2024 installation,
 // serves the route last saved in SkyDemon to it and writes it for the GTN.
-func runRoutes(ctx context.Context, c *config, w *gtn.Writer, l *log.Logger) {
-	env := routeEnv{
+func runRoutes(ctx context.Context, c *config, links routeLinks, l *log.Logger) {
+	runRoutesWith(ctx, c, links, l, routeEnv{
 		installs: exexml.Find(),
 		running:  msfsRunning,
 		addr:     routeserver.Addr,
 		retry:    pluginRetry,
-		exitWait: 0,
-	}
-
-	// Quit chosen in the tray isn't kept waiting.
-	if c.auto {
-		env.exitWait = msfsExitWait
-	}
-
-	runRoutesWith(ctx, c, w, l, env)
+		exitWait: msfsExitWait,
+	})
 }
 
-func runRoutesWith(ctx context.Context, c *config, w *gtn.Writer, l *log.Logger, env routeEnv) {
+func runRoutesWith(
+	ctx context.Context,
+	c *config,
+	links routeLinks,
+	l *log.Logger,
+	env routeEnv,
+) {
 	var wg sync.WaitGroup
 
+	w := links.gtn
 	if w != nil {
 		defer w.Close() // after wg.Wait, deferred below: Watch writes no more
 	}
 
-	if installPlugin(env.installs, l, !env.running()) {
-		wg.Go(func() { updatePluginLater(ctx, l, env) })
+	st := installPlugin(env.installs, l, !env.running())
+	if st.later {
+		wg.Go(func() { updatePluginLater(ctx, l, env, links.msfsClosed) })
 	}
 
 	defer wg.Wait()
@@ -100,12 +109,20 @@ func runRoutesWith(ctx context.Context, c *config, w *gtn.Writer, l *log.Logger,
 		dir = filepath.Join(docs, "SkyDemon", "Routes")
 	}
 
-	l.Printf("route: routes saved in %s go to the G1000", dir)
+	l.Printf("route: routes saved in %s go to %s",
+		dir, routeTargets(len(env.installs) > 0, w != nil))
 
-	srv := routeserver.New(dir, plugin.ID(), l)
+	// The ID tells the plugin MSFS runs to ask for a restart: not when
+	// MSFS may run another package of that name, e.g. a linked one.
+	id := plugin.ID()
+	if st.foreign {
+		id = ""
+	}
+
+	srv := routeserver.New(dir, id, l)
 
 	if w != nil {
-		wg.Go(func() { srv.Watch(ctx, routeCheck, w.SetRoute) })
+		wg.Go(func() { srv.Watch(ctx, routeCheck, links.connected, w.SetRoute) })
 	}
 
 	err := srv.RunOn(ctx, env.addr)
@@ -115,18 +132,41 @@ func runRoutesWith(ctx context.Context, c *config, w *gtn.Writer, l *log.Logger,
 	}
 }
 
-// updatePluginLater updates the plugin once MSFS is closed, at the latest
-// when ctx is done, as with -auto when MSFS exits, and tries again when
-// that fails, e.g. with files MSFS held just after it closed.
-func updatePluginLater(ctx context.Context, l *log.Logger, env routeEnv) {
+// routeTargets names where routes go.
+func routeTargets(toG1000, toGTN bool) string {
+	switch {
+	case toG1000 && toGTN:
+		return "the G1000 and the GTN"
+	case toGTN:
+		return "the GTN"
+	case toG1000:
+		return "the G1000"
+	default:
+		return "no avionics yet: no MSFS 2024 nor TDS GTNXi found"
+	}
+}
+
+// updatePluginLater updates the plugin once MSFS is closed, and tries
+// again when that fails, e.g. with files MSFS held just after it closed.
+// When ctx is done it updates if MSFS is closed, waiting for it only when
+// the app stops because MSFS closed: a Quit, or Windows ending the
+// session, isn't kept waiting.
+func updatePluginLater(ctx context.Context, l *log.Logger, env routeEnv, msfsClosed func() bool) {
 	tick := time.NewTicker(env.retry)
 	defer tick.Stop()
 
 	for tries := 0; tries < pluginTries; {
 		select {
 		case <-ctx.Done():
-			if gone(env.running, env.exitWait, msfsExitPoll) {
+			wait := time.Duration(0)
+			if msfsClosed() {
+				wait = env.exitWait
+			}
+
+			if gone(env.running, wait, msfsExitPoll) {
 				installPlugin(env.installs, l, true)
+			} else {
+				l.Printf("route: MSFS plugin is updated at the next start with MSFS closed")
 			}
 
 			return
@@ -137,7 +177,7 @@ func updatePluginLater(ctx context.Context, l *log.Logger, env routeEnv) {
 
 			tries++
 
-			if !installPlugin(env.installs, l, true) {
+			if !installPlugin(env.installs, l, true).later {
 				return
 			}
 		}
@@ -163,26 +203,34 @@ func gone(running func() bool, wait, every time.Duration) bool {
 	return true
 }
 
+// installState is what installPlugin found.
+type installState struct {
+	// later: an update was left for later, or failed. foreign: another
+	// package of the name, or a link, was left alone.
+	later, foreign bool
+}
+
 // installPlugin installs or, with update, updates the plugin next to
-// each of the exe.xml files, i.e. for each MSFS 2024 installation. It
-// reports whether an update was left for later, or failed.
-func installPlugin(installs exexml.Installs, l *log.Logger, update bool) bool {
+// each of the exe.xml files, i.e. for each MSFS 2024 installation.
+func installPlugin(installs exexml.Installs, l *log.Logger, update bool) installState {
 	dirs := make([]string, 0, len(installs))
 	for _, exeXML := range installs {
 		dirs = append(dirs, filepath.Dir(exeXML))
 	}
 
-	later := false
+	var st installState
 
 	for _, r := range plugin.Install(dirs, version, update) {
+		st.foreign = st.foreign || r.Foreign
+
 		switch {
 		case r.Err != nil:
 			// A write that failed, not a package refused: try again.
-			later = later || r.Changed
+			st.later = st.later || r.Changed
 
 			l.Printf("route: MSFS plugin: %v", r.Err)
 		case r.Outdated:
-			later = true
+			st.later = true
 
 			l.Printf("route: MSFS plugin in %s is updated once MSFS is closed; "+
 				"MSFS loads the new one at its next start", r.Community)
@@ -194,5 +242,5 @@ func installPlugin(installs exexml.Installs, l *log.Logger, update bool) bool {
 		}
 	}
 
-	return later
+	return st
 }

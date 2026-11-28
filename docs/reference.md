@@ -129,7 +129,9 @@ It works with two parts:
 After an update of SkyDemonConnect, the plugin is updated when its files
 changed, but not while MSFS runs, as MSFS only reads its packages when it
 starts: with **Start with MSFS** that is when MSFS closes, so the new plugin
-runs from the next start on. Until then the MFD says to restart MSFS.
+runs from the next start on. Until then the MFD says to restart MSFS. Quit
+SkyDemonConnect while MSFS runs, and the update waits until SkyDemonConnect
+next runs with MSFS closed.
 
 A route planned on a tablet reaches the G1000 once it is opened and saved in
 SkyDemon on the PC.
@@ -144,15 +146,17 @@ plugin again.
 
 With the [TDS GTNXi](https://www.tdssim.com) installed, the saved route also
 goes to its flight plan folder, `%PROGRAMDATA%\TDS\GTNXi\FPL`, as
-`SKYDEMON.gfp`, replaced with each newly saved route. On the GTN, open the
+`SKYDEMON.gfp`. While SkyDemonConnect is connected to MSFS, it writes the
+newest route, and again each time a route is saved. On the GTN, open the
 flight plan catalog and choose **Menu → Import → SKYDEMON**. If it isn't
 listed, restart the GTN: some versions read the folder only when they start.
 
 The airport codes come from MSFS: SkyDemonConnect asks it for every airport
-of the world once it connects, and each of SkyDemon's aerodromes becomes the
-one within 1 NM, as for the G1000. Until MSFS has answered, a few seconds
-after it connected, the plan holds positions only, and it is written again
-with the codes then. The log says which (`route: … for the GTN`).
+of the world once it connects, and again when a flight starts if the answer
+in its main menu came short, and each of SkyDemon's aerodromes becomes the
+one within 1 NM, as for the G1000. Until MSFS has answered, the plan holds
+positions only, and it is written again with the codes then; one with the
+codes already there is kept. The log says which (`route: … for the GTN`).
 
 ## Update and uninstall
 

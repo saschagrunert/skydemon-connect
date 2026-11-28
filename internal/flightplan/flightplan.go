@@ -86,14 +86,15 @@ func Parse(r io.Reader) (Route, error) {
 
 	out.Points = append(out.Points, start)
 
-	for i, leg := range d.Route.Legs {
+	for _, leg := range d.Route.Legs {
 		if leg.To == "" {
 			continue // the weight and balance, airfields and such
 		}
 
 		p, err := point(leg.To, leg.ToType)
 		if err != nil {
-			return Route{}, fmt.Errorf("point %d: %w", i+1, err)
+			// The start is point 0.
+			return Route{}, fmt.Errorf("point %d: %w", len(out.Points), err)
 		}
 
 		out.Points = append(out.Points, p)

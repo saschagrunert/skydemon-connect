@@ -87,7 +87,7 @@ type Server struct {
 	read  file
 	route *Route
 	err   error
-	// served is the ID last served, asked whether the plugin asked yet.
+	// served is the ID last served to the plugin, logged once.
 	served string
 	// refused are the origins logged as refused.
 	refused map[string]bool
@@ -164,14 +164,21 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	s.allowOrigin(w, r.Header.Get("Origin"))
 	w.Header().Set("Cache-Control", "no-store")
-	w.Header().Set(PluginHeader, s.plugin)
 
-	// Only the plugin sends its ID: a browser or curl isn't the G1000.
-	if r.URL.Query().Has("plugin") {
-		s.fromPlugin(r.URL.Query().Get("plugin"), r.Header.Get("Origin"))
+	if s.plugin != "" {
+		w.Header().Set(PluginHeader, s.plugin)
 	}
 
-	route := s.current()
+	// Only the plugin sends its ID: a browser or curl isn't the G1000.
+	var route *Route
+
+	if r.URL.Query().Has("plugin") {
+		s.fromPlugin(r.URL.Query().Get("plugin"), r.Header.Get("Origin"))
+		route = s.current()
+	} else {
+		route = s.newestRoute()
+	}
+
 	if route == nil {
 		http.NotFound(w, r)
 
@@ -187,18 +194,27 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 // Watch calls changed with the newest route whenever it changes, looking
-// every interval, until ctx is done. A route gone, e.g. deleted, is no
-// change: what was handed on stays.
-func (s *Server) Watch(ctx context.Context, every time.Duration, changed func(*Route)) {
+// every interval while active says so, until ctx is done. With none left,
+// what was handed on stays; with the newest deleted, the one saved before
+// it is the newest, and handed on.
+func (s *Server) Watch(
+	ctx context.Context,
+	every time.Duration,
+	active func() bool,
+	changed func(*Route),
+) {
 	tick := time.NewTicker(every)
 	defer tick.Stop()
 
 	last := ""
 
 	for {
-		if r := s.current(); r != nil && r.ID != last {
-			last = r.ID
-			changed(r)
+		// Inactive, e.g. with MSFS closed, the folder is left alone.
+		if active() {
+			if r := s.newestRoute(); r != nil && r.ID != last {
+				last = r.ID
+				changed(r)
+			}
 		}
 
 		select {
@@ -247,18 +263,40 @@ func (s *Server) fromPlugin(id, origin string) {
 		s.log.Printf("route: the G1000 asked for the first time, from origin %q", origin)
 	}
 
-	if id != s.plugin && id != s.otherPlugin {
+	// Without an ID, e.g. with a linked package, there is nothing to tell.
+	if s.plugin != "" && id != s.plugin && id != s.otherPlugin {
 		s.otherPlugin = id
 		s.log.Printf("route: MSFS runs another plugin than the one installed; " +
 			"restart MSFS to load it")
 	}
 }
 
-// current is the newest route, nil without one, and logs what changed.
+// current is the newest route for the plugin, nil without one, and logs
+// what changed.
 func (s *Server) current() *Route {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	route := s.newestLocked()
+	if route != nil && route.ID != s.served {
+		s.served = route.ID
+		s.log.Printf("route: %q, %d points, for the G1000", route.Name, len(route.Points))
+	}
+
+	return route
+}
+
+// newestRoute is the newest route, nil without one, read again only when
+// its file changed.
+func (s *Server) newestRoute() *Route {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.newestLocked()
+}
+
+// newestLocked is newestRoute, with mu held.
+func (s *Server) newestLocked() *Route {
 	f, err := newest(s.dir)
 	if err != nil {
 		if s.err == nil || s.err.Error() != err.Error() {
@@ -277,11 +315,6 @@ func (s *Server) current() *Route {
 		if s.err != nil {
 			s.log.Printf("route: %s: %v", filepath.Base(f.path), s.err)
 		}
-	}
-
-	if s.route != nil && s.route.ID != s.served {
-		s.served = s.route.ID
-		s.log.Printf("route: %q, %d points", s.route.Name, len(s.route.Points))
 	}
 
 	return s.route

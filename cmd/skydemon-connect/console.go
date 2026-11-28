@@ -87,7 +87,10 @@ func runConsoleUntilInterrupt(c *config, out io.Writer) error {
 		<-done
 	})
 
-	src := input{sim: simconnect.Run, routes: runRoutes, airports: nil, quitOnSessionEnd: false}
+	src := input{
+		sim: simconnect.Run, routes: runRoutes, airports: nil, msfsExited: nil,
+		quitOnSessionEnd: false,
+	}
 	err := runConsole(ctx, c, out, src, statusEvery)
 
 	close(done)
@@ -111,7 +114,7 @@ func runConsole(
 	l.Printf("SkyDemonConnect %s, %d Hz", version, feed.RateHz)
 
 	// With -auto, as with the tray, MSFS's exit ends the app.
-	watched := false
+	parent, watched := ctx, false
 	if c.auto {
 		ctx, watched = watchMSFS(ctx, l)
 	}
@@ -123,6 +126,7 @@ func runConsole(
 			sim:              src.sim,
 			routes:           src.routes,
 			airports:         nil,
+			msfsExited:       msfsExited(parent, ctx, watched),
 			quitOnSessionEnd: sessionEndQuits(c.auto, watched),
 		},
 		l,

@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"math"
 	"strings"
+	"time"
 
 	"github.com/saschagrunert/skydemon-connect/internal/position"
 )
@@ -15,7 +16,8 @@ import (
 const (
 	recvAirportList = 18 // SIMCONNECT_RECV_ID_AIRPORT_LIST
 	// airportsRequestID is far from the traffic requests' IDs, which
-	// count up.
+	// count up; each request of the airports adds one, so that a late
+	// answer to an earlier one is told apart.
 	airportsRequestID = 0x7FFF0000
 
 	// SIMCONNECT_RECV_FACILITIES_LIST: the header, dwRequestID,
@@ -39,6 +41,15 @@ const (
 	// maxAirportPackets bounds the packets kept for one list: far more
 	// than 40,000 airports need.
 	maxAirportPackets = 4096
+	// minAirports is the least a whole world has: fewer, e.g. while MSFS is
+	// in its main menu, or only its cache, is asked for again when a
+	// flight starts.
+	minAirports = 1000
+	// airportsLost is when a request without an answer counts as lost,
+	// e.g. to an exception, and is asked again, up to maxLostAirports
+	// times a session.
+	airportsLost    = time.Minute
+	maxLostAirports = 3
 )
 
 // airportState collects the packets of the airport list.
@@ -47,17 +58,57 @@ type airportState struct {
 	// outOf is the packet count, done set once all came.
 	outOf uint32
 	done  bool
+	// asked is set while a request is out or answered, at askedAt; whole
+	// once a list of at least minAirports came.
+	asked, whole bool
+	askedAt      time.Time
+	// id is the last request's, requests how many were made, lost how
+	// many were asked again without an answer.
+	id, requests uint32
+	lost         int
+}
+
+// nextID is the ID of the next request.
+func (as *airportState) nextID() uint32 { return airportsRequestID + as.requests }
+
+// ask starts collecting the answer to the request nextID gave.
+func (as *airportState) ask(now time.Time) {
+	as.id = as.nextID()
+	as.requests++
+	as.packets, as.outOf, as.done, as.asked, as.askedAt = nil, 0, false, true, now
+}
+
+// again lets the next tick ask again, as a flight starts, unless a whole
+// list came or the last request may still be answered.
+func (as *airportState) again(now time.Time) {
+	if as.asked && !as.whole && (as.done || as.isLost(now)) {
+		as.asked = false
+	}
+}
+
+// retryLost lets the next tick ask again when the last request got no
+// answer, a few times a session: MSFS may not answer at all.
+func (as *airportState) retryLost(now time.Time) {
+	if as.asked && as.isLost(now) && as.lost < maxLostAirports {
+		as.lost++
+		as.asked = false
+	}
+}
+
+// isLost reports whether the last request got no answer for airportsLost.
+func (as *airportState) isLost(now time.Time) bool {
+	return !as.done && now.Sub(as.askedAt) >= airportsLost
 }
 
 // listHeader is the SIMCONNECT_RECV_FACILITIES_LIST part of a packet: the
 // array size, the packet's number and the packet count.
 type listHeader struct{ n, entry, outOf uint32 }
 
-// readListHeader reads the header of a packet of the airport request; ok
-// is false for another request's or a broken one.
-func readListHeader(buf []byte) (listHeader, bool) {
+// readListHeader reads the header of a packet of the airport request id;
+// ok is false for another request's or a broken one.
+func readListHeader(buf []byte, id uint32) (listHeader, bool) {
 	if len(buf) < listDataOffset ||
-		binary.LittleEndian.Uint32(buf[listRequestOffset:]) != airportsRequestID {
+		binary.LittleEndian.Uint32(buf[listRequestOffset:]) != id {
 		return listHeader{n: 0, entry: 0, outOf: 0}, false
 	}
 
@@ -73,8 +124,8 @@ func readListHeader(buf []byte) (listHeader, bool) {
 // add takes one SIMCONNECT_RECV_AIRPORT_LIST and returns the whole list
 // once its last packet came, else nil.
 func (as *airportState) add(buf []byte) []position.Airport {
-	h, ok := readListHeader(buf)
-	if as.done || !ok {
+	h, ok := readListHeader(buf, as.id)
+	if !as.asked || as.done || !ok {
 		return nil
 	}
 
@@ -101,6 +152,7 @@ func (as *airportState) add(buf []byte) []position.Airport {
 	}
 
 	as.packets = nil
+	as.whole = len(all) >= minAirports
 
 	return all
 }

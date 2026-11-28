@@ -249,24 +249,33 @@ func session(ctx context.Context, l *log.Logger, open opener, h Handlers) (bool,
 		}
 	}
 
-	askAirports(c, l, &h)
-
 	return dispatch(ctx, c, &dispatcher{log: l, h: h})
 }
 
-// askAirports asks for the airports, if wanted. Without them positions and
-// traffic go on.
-func askAirports(c conn, l *log.Logger, h *Handlers) {
-	if h.Airports == nil {
+// airportsTick asks for the airports, if wanted, once the session is
+// connected, and again when a flight starts without a whole list yet.
+// Without them positions and traffic go on.
+func airportsTick(c conn, d *dispatcher) {
+	if d.h.Airports == nil || !d.connected {
 		return
 	}
 
-	err := c.requestAirports(airportsRequestID)
-	if err != nil {
-		l.Printf("simconnect: no airports: %v", err)
+	d.airports.retryLost(time.Now())
 
-		h.Airports = nil
+	if d.airports.asked {
+		return
 	}
+
+	err := c.requestAirports(d.airports.nextID())
+	if err != nil {
+		d.log.Printf("simconnect: no airports: %v", err)
+
+		d.h.Airports = nil
+
+		return
+	}
+
+	d.airports.ask(time.Now())
 }
 
 // defineTraffic sets up the traffic definition.
@@ -314,6 +323,7 @@ func dispatch(ctx context.Context, c conn, d *dispatcher) (bool, error) {
 		d.tick(time.Now())
 
 		trafficTick(c, d, time.Now())
+		airportsTick(c, d)
 
 		buf := c.nextDispatch()
 		if buf == nil {

@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -93,7 +94,7 @@ func TestNewestRoute(t *testing.T) {
 
 	s := routeserver.New(dir, plugin, log.New(&out, "", 0))
 
-	rec := get(t, s, routeserver.Addr, "/route", coui)
+	rec := get(t, s, routeserver.Addr, "/route?plugin="+plugin, coui)
 	r := decode(t, rec)
 
 	if r.Name != "Padova - TrevisoS.Angelo" || len(r.Points) != 2 || !r.Points[0].Aerodrome ||
@@ -108,12 +109,19 @@ func TestNewestRoute(t *testing.T) {
 		t.Errorf("headers %v", rec.Header())
 	}
 
-	// The same file again: the same ID, logged once.
-	if again := decode(t, get(t, s, routeserver.Addr, "/route", coui)); again.ID != r.ID {
+	// The same file again: the same ID, logged once; a request not of the
+	// plugin, e.g. from curl, is no fetch of the G1000's.
+	again := decode(t, get(t, s, routeserver.Addr, "/route?plugin="+plugin, coui))
+	if again.ID != r.ID {
 		t.Errorf("ID changed to %q", again.ID)
 	}
 
-	if n := strings.Count(out.String(), `"Padova - TrevisoS.Angelo", 2 points`); n != 1 {
+	if curl := decode(t, get(t, s, routeserver.Addr, "/route", "")); curl.ID != r.ID {
+		t.Errorf("curl got %q", curl.ID)
+	}
+
+	want := `"Padova - TrevisoS.Angelo", 2 points, for the G1000`
+	if n := strings.Count(out.String(), want); n != 1 {
 		t.Errorf("logged %d times:\n%s", n, out.String())
 	}
 
@@ -161,6 +169,22 @@ func TestOtherPlugin(t *testing.T) {
 	if n := strings.Count(out.String(), "another plugin"); n != 1 ||
 		!strings.Contains(out.String(), `asked for the first time, from origin "coui://html_ui"`) {
 		t.Errorf("logged %d times:\n%s", n, out.String())
+	}
+}
+
+// Without an ID of its own, e.g. with a linked package, the server has
+// nothing to tell a plugin, nor logs one.
+func TestNoPluginID(t *testing.T) {
+	t.Parallel()
+
+	var out testutil.Buffer
+
+	s := routeserver.New(t.TempDir(), "", log.New(&out, "", 0))
+
+	rec := get(t, s, routeserver.Addr, "/route?plugin="+plugin, coui)
+	if _, ok := rec.Header()[routeserver.PluginHeader]; ok ||
+		strings.Contains(out.String(), "another plugin") {
+		t.Errorf("headers %v, log:\n%s", rec.Header(), out.String())
 	}
 }
 
@@ -413,17 +437,24 @@ func TestWatch(t *testing.T) {
 
 		s := routeserver.New(dir, plugin, testutil.Log(t))
 
-		var got []string
+		var (
+			got    []string
+			active atomic.Bool
+		)
+
+		active.Store(true)
 
 		ctx, cancel := context.WithCancel(t.Context())
 		done := make(chan struct{})
 
 		go func() {
-			s.Watch(ctx, time.Second, func(r *routeserver.Route) { got = append(got, r.Name) })
+			s.Watch(ctx, time.Second, active.Load,
+				func(r *routeserver.Route) { got = append(got, r.Name) })
 			close(done)
 		}()
 
-		// None yet, then one, the same again, then another.
+		// None yet, then one, the same again, then another; inactive, a
+		// third isn't looked for, and is once active again.
 		time.Sleep(1500 * time.Millisecond)
 		copyRoute(t, dir, "LeipzigHalle - Holzdorf.flightplan", now)
 		time.Sleep(2 * time.Second)
@@ -431,10 +462,23 @@ func TestWatch(t *testing.T) {
 		time.Sleep(time.Second)
 		synctest.Wait()
 
+		active.Store(false)
+		copyRoute(t, dir, "LeipzigHalle - Holzdorf.flightplan", now.Add(2*time.Minute))
+		time.Sleep(2 * time.Second)
+		synctest.Wait()
+
+		if len(got) != 2 {
+			t.Errorf("looked while inactive: %q", got)
+		}
+
+		active.Store(true)
+		time.Sleep(2 * time.Second)
+		synctest.Wait()
+
 		cancel()
 		<-done
 
-		want := "LeipzigHalle - Holzdorf,Padova - TrevisoS.Angelo"
+		want := "LeipzigHalle - Holzdorf,Padova - TrevisoS.Angelo,LeipzigHalle - Holzdorf"
 		if strings.Join(got, ",") != want {
 			t.Errorf("changed %q, want %q", got, want)
 		}

@@ -241,7 +241,8 @@ func TestInstallLeavesOthersAlone(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if r := installOnce(t, user, "v1.0.0"); !errors.Is(r.Err, errNotOurs) || r.Changed {
+	if r := installOnce(t, user, "v1.0.0"); !errors.Is(r.Err, errNotOurs) || r.Changed ||
+		!r.Foreign {
 		t.Errorf("other creator %+v", r)
 	}
 
@@ -262,7 +263,7 @@ func TestInstallLeavesOthersAlone(t *testing.T) {
 		t.Skipf("no symlinks here: %v", err)
 	}
 
-	if r := installOnce(t, linkUser, "v1.0.0"); !errors.Is(r.Err, errLinked) {
+	if r := installOnce(t, linkUser, "v1.0.0"); !errors.Is(r.Err, errLinked) || !r.Foreign {
 		t.Errorf("linked %+v", r)
 	}
 }
@@ -274,8 +275,19 @@ func TestInstallRemovesLeftovers(t *testing.T) {
 
 	user, community := msfs(t)
 	leftover := filepath.Join(community, "."+Name+"-new-123-old")
+	// Another copy's, at work: too young to be a leftover.
+	young := filepath.Join(community, "."+Name+"-new-456")
 
-	err := os.MkdirAll(filepath.Join(leftover, "html_ui"), 0o700)
+	for _, dir := range []string{leftover, young} {
+		err := os.MkdirAll(filepath.Join(dir, "html_ui"), 0o700)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	old := time.Now().Add(-leftoverAge - time.Minute)
+
+	err := os.Chtimes(leftover, old, old)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -287,6 +299,11 @@ func TestInstallRemovesLeftovers(t *testing.T) {
 	_, err = os.Stat(leftover)
 	if !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("leftover still there: %v", err)
+	}
+
+	_, err = os.Stat(young)
+	if err != nil {
+		t.Errorf("another copy's folder removed: %v", err)
 	}
 
 	if m, _ := readManifest(filepath.Join(community, Name)); m.PackageVersion != "0.0.0" {

@@ -12,6 +12,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -147,16 +148,20 @@ func (w *Writer) write() {
 		return
 	}
 
-	err := replaceFile(filepath.Join(w.dir, Name+".gfp"), []byte(plan))
-	if err != nil {
-		if plan != w.failed {
-			w.failed = plan
-			w.log.Printf("route: GTN flight plan: %v; trying again", err)
-		}
+	path := filepath.Join(w.dir, Name+".gfp")
 
-		if w.retry == nil {
-			w.retry = time.AfterFunc(retryAfter, w.again)
-		}
+	// The plan the file holds may be this route's with more codes, e.g.
+	// at the start before the airports came, or from a whole list while
+	// these are a short one: kept, until the airports give as many.
+	if moreCodes(path, w.route, len(idents)) {
+		w.written = plan
+
+		return
+	}
+
+	err := replaceFile(path, []byte(plan))
+	if err != nil {
+		w.failedWrite(plan, err)
 
 		return
 	}
@@ -176,6 +181,36 @@ func (w *Writer) write() {
 	}
 
 	w.log.Printf("route: %q for the GTN as %s, %s", w.route.Name, Name, via)
+}
+
+// identRE finds an airport's code before its position in a GFP point.
+var identRE = regexp.MustCompile(`F:[A-Z0-9]+,`)
+
+// moreCodes reports whether the plan at path is r's with more than n
+// airport codes.
+func moreCodes(path string, r *routeserver.Route, n int) bool {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+
+	positions, _ := GFP(r, nil)
+	codes := identRE.FindAllIndex(b, -1)
+
+	return len(codes) > n && string(identRE.ReplaceAll(b, []byte("F:"))) == positions
+}
+
+// failedWrite logs, once per plan, that writing it failed, and tries again
+// later.
+func (w *Writer) failedWrite(plan string, err error) {
+	if plan != w.failed {
+		w.failed = plan
+		w.log.Printf("route: GTN flight plan: %v; trying again", err)
+	}
+
+	if w.retry == nil {
+		w.retry = time.AfterFunc(retryAfter, w.again)
+	}
 }
 
 // again is the retry of a failed write.
