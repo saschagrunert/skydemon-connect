@@ -87,7 +87,8 @@ func runConsoleUntilInterrupt(c *config, out io.Writer) error {
 		<-done
 	})
 
-	err := runConsole(ctx, c, out, input{sim: simconnect.Run, routes: runRoutes}, statusEvery)
+	src := input{sim: simconnect.Run, routes: runRoutes, airports: nil, quitOnSessionEnd: false}
+	err := runConsole(ctx, c, out, src, statusEvery)
 
 	close(done)
 
@@ -121,6 +122,7 @@ func runConsole(
 		input{
 			sim:              src.sim,
 			routes:           src.routes,
+			airports:         nil,
 			quitOnSessionEnd: sessionEndQuits(c.auto, watched),
 		},
 		l,

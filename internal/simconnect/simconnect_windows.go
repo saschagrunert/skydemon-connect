@@ -4,6 +4,7 @@ package simconnect
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -17,9 +18,11 @@ import (
 
 // Constants from SimConnect.h.
 const (
-	periodSimFrame = 3
-	objectUser     = 0
-	unused         = 0xFFFFFFFF
+	// facilityListAirport is SIMCONNECT_FACILITY_LIST_TYPE_AIRPORT.
+	facilityListAirport = 0
+	periodSimFrame      = 3
+	objectUser          = 0
+	unused              = 0xFFFFFFFF
 )
 
 // LoadLibraryEx flags: look for the DLL's own imports, e.g. the VC++
@@ -41,7 +44,12 @@ type api struct {
 	procOpen, procClose, procAddToDataDefinition, procRequestData,
 	procRequestDataByType, procSubscribeToSystemEvent,
 	procGetNextDispatch *syscall.Proc
+	// procRequestAllFacilities is nil in a DLL without it: then only the
+	// airports are missing.
+	procRequestAllFacilities *syscall.Proc
 }
+
+var errNoAllFacilities = errors.New("SimConnect.dll lacks SimConnect_RequestAllFacilities")
 
 // dllCandidates are the places SimConnect.dll is looked for, in order:
 // exeDir (where the exe is) and the SDK folders the environment names.
@@ -146,6 +154,8 @@ func bind(dll *syscall.DLL) (*api, error) {
 			return nil, &setupError{user: errOldDLL, detail: fmt.Errorf("%s: %w", dll.Name, err)}
 		}
 	}
+
+	a.procRequestAllFacilities, _ = dll.FindProc("SimConnect_RequestAllFacilities")
 
 	return a, nil
 }
@@ -283,6 +293,16 @@ func (c *dllConn) addTrafficVar(name, unit string, datatype uint32) error {
 func (c *dllConn) requestTraffic(request, objectType, radius uint32) error {
 	r, _, _ := c.a.procRequestDataByType.Call(c.handle, uintptr(request),
 		trafficDefineID, uintptr(radius), uintptr(objectType))
+
+	return hr(r)
+}
+
+func (c *dllConn) requestAirports(request uint32) error {
+	if c.a.procRequestAllFacilities == nil {
+		return errNoAllFacilities
+	}
+
+	r, _, _ := c.a.procRequestAllFacilities.Call(c.handle, facilityListAirport, uintptr(request))
 
 	return hr(r)
 }

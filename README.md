@@ -9,7 +9,8 @@ per second, so the aircraft jumps; SkyDemonConnect sends 30 per second, to
 SkyDemon on the same PC and to tablets and phones on your network. It is a
 single `.exe` in the system tray that can start and stop with MSFS. Other
 aircraft around you show up as traffic, too, and the route you save in
-SkyDemon [lands in the G1000](docs/reference.md#skydemon-routes-in-the-g1000).
+SkyDemon [lands in the G1000](docs/reference.md#skydemon-routes-in-the-g1000)
+or the [TDS GTNXi](docs/reference.md#tds-gtnxi).
 
 ## Install
 
@@ -87,7 +88,7 @@ already has the option; leave it alone, as a click removes the entry.
   [Tablets and phones](#tablets-and-phones).
 
 The tray menu, starting with MSFS (and adding it to MSFS's `exe.xml` by
-hand), the demo, traffic, SkyDemon routes in the G1000, all options,
+hand), the demo, traffic, SkyDemon routes in the G1000 and the GTN, all options,
 updating and uninstalling are described in
 [docs/reference.md](docs/reference.md).
 

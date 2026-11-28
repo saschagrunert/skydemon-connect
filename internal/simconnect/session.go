@@ -47,6 +47,9 @@ type conn interface {
 	// requestTraffic asks once for the objects of objectType within
 	// radius metres, answered with request.
 	requestTraffic(request, objectType, radius uint32) error
+	// requestAirports asks once for every airport of the world, answered
+	// with request.
+	requestAirports(request uint32) error
 	// subscribe asks for the system event name, sent with the event ID.
 	subscribe(event uint32, name string) error
 	requestData() error
@@ -246,7 +249,24 @@ func session(ctx context.Context, l *log.Logger, open opener, h Handlers) (bool,
 		}
 	}
 
+	askAirports(c, l, &h)
+
 	return dispatch(ctx, c, &dispatcher{log: l, h: h})
+}
+
+// askAirports asks for the airports, if wanted. Without them positions and
+// traffic go on.
+func askAirports(c conn, l *log.Logger, h *Handlers) {
+	if h.Airports == nil {
+		return
+	}
+
+	err := c.requestAirports(airportsRequestID)
+	if err != nil {
+		l.Printf("simconnect: no airports: %v", err)
+
+		h.Airports = nil
+	}
 }
 
 // defineTraffic sets up the traffic definition.

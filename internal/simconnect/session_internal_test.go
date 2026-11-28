@@ -52,6 +52,7 @@ type fakeConn struct {
 	requestErr      error
 	onRequest       func(n int)
 	onTraffic       func(c *fakeConn, request, objectType, radius uint32)
+	onAirports      func(c *fakeConn, request uint32) error
 	msgs            [][]byte
 	events          []string
 	failRequestFrom int
@@ -69,6 +70,14 @@ func (c *fakeConn) requestTraffic(request, objectType, radius uint32) error {
 	}
 
 	return c.requestErr
+}
+
+func (c *fakeConn) requestAirports(request uint32) error {
+	if c.onAirports != nil {
+		return c.onAirports(c, request)
+	}
+
+	return nil
 }
 
 func (c *fakeConn) subscribe(id uint32, name string) error {
