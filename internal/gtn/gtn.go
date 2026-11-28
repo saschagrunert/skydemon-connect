@@ -8,6 +8,7 @@ package gtn
 import (
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"math"
 	"os"
@@ -46,9 +47,17 @@ const (
 	// retryAfter is when a failed write is tried again, e.g. one the GTN
 	// held the file during.
 	retryAfter = 5 * time.Second
+	// wholeAirports is the least a whole world's list has, as the sim
+	// gives it: with fewer, a plan with more codes is kept.
+	wholeAirports = 1000
+	// maxPlan is far more than any plan: SkyDemon's routes are a few KiB.
+	maxPlan = 64 << 10
 )
 
-var errNotDir = errors.New("is not a folder")
+var (
+	errNotDir  = errors.New("is not a folder")
+	errNotPlan = errors.New("not a plan of SkyDemonConnect's")
+)
 
 // Folder is the TDS GTNXi's FPL folder below programData, where the
 // %PROGRAMDATA% environment variable points; "" when the GTNXi isn't
@@ -152,9 +161,11 @@ func (w *Writer) write() {
 
 	// The plan the file holds may be this route's with more codes, e.g.
 	// at the start before the airports came, or from a whole list while
-	// these are a short one: kept, until the airports give as many.
-	if moreCodes(path, w.route, len(idents)) {
+	// these are a short one: kept, until a whole list came.
+	if len(w.airports) < wholeAirports && moreCodes(path, w.route, len(idents)) {
 		w.written = plan
+		w.log.Printf("route: %q for the GTN kept as %s, with more airport codes than known yet",
+			w.route.Name, Name)
 
 		return
 	}
@@ -187,9 +198,10 @@ func (w *Writer) write() {
 var identRE = regexp.MustCompile(`F:[A-Z0-9]+,`)
 
 // moreCodes reports whether the plan at path is r's with more than n
-// airport codes.
+// airport codes. Only a file of a plan's size is read, not a link: the
+// folder is shared with the PC's other users.
 func moreCodes(path string, r *routeserver.Route, n int) bool {
-	b, err := os.ReadFile(path)
+	b, err := readPlan(path)
 	if err != nil {
 		return false
 	}
@@ -198,6 +210,34 @@ func moreCodes(path string, r *routeserver.Route, n int) bool {
 	codes := identRE.FindAllIndex(b, -1)
 
 	return len(codes) > n && string(identRE.ReplaceAll(b, []byte("F:"))) == positions
+}
+
+// readPlan reads the regular file at path, not a link, up to maxPlan
+// bytes: one swapped for a link between the checks isn't read.
+func readPlan(path string) ([]byte, error) {
+	link, err := os.Lstat(path)
+	if err != nil || !link.Mode().IsRegular() {
+		return nil, errNotPlan
+	}
+
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("read plan: %w", err)
+	}
+
+	defer func() { _ = f.Close() }()
+
+	opened, err := f.Stat()
+	if err != nil || !os.SameFile(link, opened) {
+		return nil, errNotPlan
+	}
+
+	b, err := io.ReadAll(io.LimitReader(f, maxPlan+1))
+	if err != nil || len(b) > maxPlan {
+		return nil, errNotPlan
+	}
+
+	return b, nil
 }
 
 // failedWrite logs, once per plan, that writing it failed, and tries again

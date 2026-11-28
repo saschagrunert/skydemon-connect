@@ -166,7 +166,8 @@ func updatePluginLater(ctx context.Context, l *log.Logger, env routeEnv, msfsClo
 			if gone(env.running, wait, msfsExitPoll) {
 				installPlugin(env.installs, l, true)
 			} else {
-				l.Printf("route: MSFS plugin is updated at the next start with MSFS closed")
+				l.Printf("route: MSFS plugin is updated the next time SkyDemonConnect " +
+					"runs and MSFS is closed or closes")
 			}
 
 			return
@@ -205,8 +206,9 @@ func gone(running func() bool, wait, every time.Duration) bool {
 
 // installState is what installPlugin found.
 type installState struct {
-	// later: an update was left for later, or failed. foreign: another
-	// package of the name, or a link, was left alone.
+	// later: an update was left for later, or failed. foreign: in each
+	// installation found another package of the name, or a link, was left
+	// alone, so that whatever MSFS runs isn't SkyDemonConnect's own.
 	later, foreign bool
 }
 
@@ -218,29 +220,49 @@ func installPlugin(installs exexml.Installs, l *log.Logger, update bool) install
 		dirs = append(dirs, filepath.Dir(exeXML))
 	}
 
-	var st installState
+	var (
+		st             installState
+		found, foreign int
+	)
 
 	for _, r := range plugin.Install(dirs, version, update) {
-		st.foreign = st.foreign || r.Foreign
-
-		switch {
-		case r.Err != nil:
-			// A write that failed, not a package refused: try again.
-			st.later = st.later || r.Changed
-
-			l.Printf("route: MSFS plugin: %v", r.Err)
-		case r.Outdated:
-			st.later = true
-
-			l.Printf("route: MSFS plugin in %s is updated once MSFS is closed; "+
-				"MSFS loads the new one at its next start", r.Community)
-		case r.Changed:
-			l.Printf("route: MSFS plugin installed in %s; MSFS loads it at its next start",
-				r.Community)
-		default:
-			l.Printf("route: MSFS plugin up to date in %s", r.Community)
+		// Found: what its Community folder holds is known.
+		if r.Err == nil || r.Changed || r.Foreign {
+			found++
 		}
+
+		if r.Foreign {
+			foreign++
+		}
+
+		st.later = logInstall(r, l) || st.later
 	}
 
+	st.foreign = found > 0 && foreign == found
+
 	return st
+}
+
+// logInstall logs what Install did in one installation, and reports
+// whether there is more to do: an update left for later, or a write that
+// failed, not a package refused.
+func logInstall(r plugin.Result, l *log.Logger) bool {
+	switch {
+	case r.Err != nil:
+		l.Printf("route: MSFS plugin: %v", r.Err)
+
+		return r.Changed
+	case r.Outdated:
+		l.Printf("route: MSFS plugin in %s is updated once MSFS is closed; "+
+			"MSFS loads the new one at its next start", r.Community)
+
+		return true
+	case r.Changed:
+		l.Printf("route: MSFS plugin installed in %s; MSFS loads it at its next start",
+			r.Community)
+	default:
+		l.Printf("route: MSFS plugin up to date in %s", r.Community)
+	}
+
+	return false
 }

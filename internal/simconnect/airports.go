@@ -45,11 +45,14 @@ const (
 	// in its main menu, or only its cache, is asked for again when a
 	// flight starts.
 	minAirports = 1000
-	// airportsLost is when a request without an answer counts as lost,
-	// e.g. to an exception, and is asked again, up to maxLostAirports
-	// times a session.
-	airportsLost    = time.Minute
-	maxLostAirports = 3
+	// airportsLost is when a request without a packet of its answer for
+	// that long counts as lost, e.g. to an exception, and is asked again,
+	// up to maxLostAirports times a session and once more at each flight
+	// start. A short answer is asked again at up to maxShortAirports
+	// flight starts.
+	airportsLost     = time.Minute
+	maxLostAirports  = 3
+	maxShortAirports = 2
 )
 
 // airportState collects the packets of the airport list.
@@ -58,14 +61,16 @@ type airportState struct {
 	// outOf is the packet count, done set once all came.
 	outOf uint32
 	done  bool
-	// asked is set while a request is out or answered, at askedAt; whole
-	// once a list of at least minAirports came.
+	// asked is set while a request is out or answered; whole once a list
+	// of at least minAirports came. heard is when the request went out or
+	// a packet of its answer came.
 	asked, whole bool
-	askedAt      time.Time
-	// id is the last request's, requests how many were made, lost how
-	// many were asked again without an answer.
+	heard        time.Time
+	// id is the last request's, requests how many were made, lost and
+	// short how many were asked again without an answer or after a short
+	// one.
 	id, requests uint32
-	lost         int
+	lost, short  int
 }
 
 // nextID is the ID of the next request.
@@ -75,14 +80,24 @@ func (as *airportState) nextID() uint32 { return airportsRequestID + as.requests
 func (as *airportState) ask(now time.Time) {
 	as.id = as.nextID()
 	as.requests++
-	as.packets, as.outOf, as.done, as.asked, as.askedAt = nil, 0, false, true, now
+	as.packets, as.outOf, as.done, as.asked, as.heard = nil, 0, false, true, now
 }
 
-// again lets the next tick ask again, as a flight starts, unless a whole
-// list came or the last request may still be answered.
+// again, as a flight starts, lets the next tick ask again after a short
+// answer, a few times, or a lost request, and lets a request that may
+// still be answered be asked again once it counts as lost.
 func (as *airportState) again(now time.Time) {
-	if as.asked && !as.whole && (as.done || as.isLost(now)) {
+	switch {
+	case !as.asked || as.whole:
+	case as.done:
+		if as.short < maxShortAirports {
+			as.short++
+			as.asked = false
+		}
+	case as.isLost(now):
 		as.asked = false
+	default:
+		as.lost = min(as.lost, maxLostAirports-1)
 	}
 }
 
@@ -95,9 +110,9 @@ func (as *airportState) retryLost(now time.Time) {
 	}
 }
 
-// isLost reports whether the last request got no answer for airportsLost.
+// isLost reports whether the last request got nothing for airportsLost.
 func (as *airportState) isLost(now time.Time) bool {
-	return !as.done && now.Sub(as.askedAt) >= airportsLost
+	return !as.done && now.Sub(as.heard) >= airportsLost
 }
 
 // listHeader is the SIMCONNECT_RECV_FACILITIES_LIST part of a packet: the
@@ -121,9 +136,9 @@ func readListHeader(buf []byte, id uint32) (listHeader, bool) {
 	return h, h.outOf > 0 && h.outOf <= maxAirportPackets && h.entry < h.outOf
 }
 
-// add takes one SIMCONNECT_RECV_AIRPORT_LIST and returns the whole list
-// once its last packet came, else nil.
-func (as *airportState) add(buf []byte) []position.Airport {
+// add takes one SIMCONNECT_RECV_AIRPORT_LIST, come at now, and returns the
+// whole list once its last packet came, else nil.
+func (as *airportState) add(buf []byte, now time.Time) []position.Airport {
 	h, ok := readListHeader(buf, as.id)
 	if !as.asked || as.done || !ok {
 		return nil
@@ -138,6 +153,7 @@ func (as *airportState) add(buf []byte) []position.Airport {
 	}
 
 	as.packets[h.entry] = airportsOf(buf[listDataOffset:], h.n)
+	as.heard = now
 
 	if len(as.packets) < int(as.outOf) {
 		return nil

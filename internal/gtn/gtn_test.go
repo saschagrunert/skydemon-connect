@@ -330,3 +330,64 @@ func TestWriterKeepsCodes(t *testing.T) {
 		t.Errorf("other route %s", b)
 	}
 }
+
+// manyAirports is a whole world's list as the sim gives it, holding only
+// the route's first airport: EDDP.
+func manyAirports() []position.Airport {
+	many := make([]position.Airport, 1000)
+	for i := range many {
+		many[i] = simAirports()[0]
+	}
+
+	return many
+}
+
+// A whole list replaces a plan with more codes, e.g. an airport that went
+// with an add-on.
+func TestWriterWholeListReplaces(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, gtn.Name+".gfp")
+
+	err := os.WriteFile(path, []byte(exported), 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var out testutil.Buffer
+
+	w := gtn.New(dir, log.New(&out, "", 0))
+	w.SetRoute(leipzigHolzdorf(t))
+	w.SetAirports(manyAirports())
+
+	b, _ := os.ReadFile(path)
+	if strings.Count(string(b), ",") != 1 || !strings.Contains(out.String(), "kept as") {
+		t.Errorf("plan %s, log:\n%s", b, out.String())
+	}
+}
+
+// A link at the plan's name isn't read for codes, nor kept.
+func TestWriterIgnoresLinkedPlan(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	elsewhere := filepath.Join(t.TempDir(), "plan.gfp")
+
+	err := os.WriteFile(elsewhere, []byte(exported), 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = os.Symlink(elsewhere, filepath.Join(dir, gtn.Name+".gfp"))
+	if err != nil {
+		t.Skipf("no symlinks here: %v", err)
+	}
+
+	gtn.New(dir, testutil.Log(t)).SetRoute(leipzigHolzdorf(t))
+
+	b, _ := os.ReadFile(filepath.Join(dir, gtn.Name+".gfp"))
+	if strings.Contains(string(b), "EDDP") {
+		t.Errorf("codes taken from a link: %s", b)
+	}
+}
