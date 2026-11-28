@@ -130,7 +130,7 @@ func (d *dispatcher) answer(id uint32, buf []byte) {
 	case recvSimobjectDataByType:
 		d.trafficData(buf)
 	case recvAirportList:
-		all := d.airports.add(buf)
+		all := d.airports.add(buf, time.Now())
 		if all != nil && d.h.Airports != nil {
 			d.log.Printf("simconnect: %d airports", len(all))
 			d.h.Airports(all)

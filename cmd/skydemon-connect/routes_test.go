@@ -343,3 +343,61 @@ func TestRunRoutesGTN(t *testing.T) {
 		t.Errorf("plan %q, %v\n%s", got, err, out.String())
 	}
 }
+
+// foreignInstall makes an MSFS installation whose Community folder holds
+// another package of the plugin's name.
+func foreignInstall(t *testing.T) string {
+	t.Helper()
+
+	user, packages := t.TempDir(), t.TempDir()
+	target := filepath.Join(packages, "Community", plugin.Name)
+
+	err := os.MkdirAll(target, 0o700)
+	if err == nil {
+		err = os.WriteFile(filepath.Join(target, "manifest.json"),
+			[]byte(`{"creator":"Someone"}`), 0o600)
+	}
+
+	if err == nil {
+		err = os.WriteFile(filepath.Join(user, "UserCfg.opt"),
+			[]byte(`InstalledPackagesPath "`+packages+`"`+"\r\n"), 0o600)
+	}
+
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return filepath.Join(user, "exe.xml")
+}
+
+// Only when every installation holds another package is what MSFS runs
+// surely not SkyDemonConnect's.
+func TestInstallPluginForeign(t *testing.T) {
+	t.Parallel()
+
+	ours, _ := oldPlugin(t)
+	l := testutil.Log(t)
+
+	if st := installPlugin(exexml.Installs{foreignInstall(t), ours[0]}, l, false); st.foreign {
+		t.Error("foreign with one installation of ours")
+	}
+
+	others := exexml.Installs{foreignInstall(t), foreignInstall(t)}
+	if st := installPlugin(others, l, false); !st.foreign {
+		t.Error("not foreign with others' packages only")
+	}
+
+	// An installation whose Community folder is gone tells nothing.
+	gone := t.TempDir()
+
+	err := os.WriteFile(filepath.Join(gone, "UserCfg.opt"),
+		[]byte(`InstalledPackagesPath "`+filepath.Join(gone, "removed")+`"`+"\r\n"), 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	withGone := exexml.Installs{foreignInstall(t), filepath.Join(gone, "exe.xml")}
+	if st := installPlugin(withGone, l, false); !st.foreign {
+		t.Error("an installation without a Community folder counted")
+	}
+}

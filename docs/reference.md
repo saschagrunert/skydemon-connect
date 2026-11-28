@@ -130,8 +130,8 @@ After an update of SkyDemonConnect, the plugin is updated when its files
 changed, but not while MSFS runs, as MSFS only reads its packages when it
 starts: with **Start with MSFS** that is when MSFS closes, so the new plugin
 runs from the next start on. Until then the MFD says to restart MSFS. Quit
-SkyDemonConnect while MSFS runs, and the update waits until SkyDemonConnect
-next runs with MSFS closed.
+SkyDemonConnect while MSFS runs, and the update waits until the next time
+SkyDemonConnect runs and MSFS is closed or closes.
 
 A route planned on a tablet reaches the G1000 once it is opened and saved in
 SkyDemon on the PC.
@@ -155,8 +155,9 @@ The airport codes come from MSFS: SkyDemonConnect asks it for every airport
 of the world once it connects, and again when a flight starts if the answer
 in its main menu came short, and each of SkyDemon's aerodromes becomes the
 one within 1 NM, as for the G1000. Until MSFS has answered, the plan holds
-positions only, and it is written again with the codes then; one with the
-codes already there is kept. The log says which (`route: … for the GTN`).
+positions only, and it is written again with the codes then; a plan of the
+same route with more codes is kept until MSFS's whole list came. The log
+says which (`route: … for the GTN`).
 
 ## Update and uninstall
 

@@ -277,7 +277,7 @@ func removeLeftovers(community string) {
 // rest fail, e.g. with MSFS holding a file, what is left is no package
 // MSFS loads next to the installed one.
 func removePackage(dir string) {
-	_ = os.Remove(filepath.Join(dir, "manifest.json"))
+	_ = os.Remove(filepath.Join(dir, manifestName))
 	_ = os.RemoveAll(dir)
 }
 
@@ -309,24 +309,38 @@ func installed(target string, content map[string][]byte) (packageState, error) {
 	}
 
 	man, err := readManifest(target)
-	if err != nil || man.Creator != creator {
+
+	switch {
+	case err == nil && man.Creator == creator:
+	case err != nil && hasPlugins(target):
+		return older, nil // ours, its manifest lost to an install cut off
+	default:
 		return missing, fmt.Errorf("%s %w", target, errNotOurs)
 	}
 
-	// Without its layout.json MSFS loads none of the package's files.
-	_, err = os.Stat(filepath.Join(target, "layout.json"))
-	if err != nil {
-		return older, nil //nolint:nilerr // broken: install again
-	}
-
-	for name, want := range content {
-		got, err := os.ReadFile(filepath.Join(target, filepath.FromSlash(name)))
-		if err != nil || !bytes.Equal(got, want) {
-			return older, nil //nolint:nilerr // a file missing or changed: install again
-		}
+	if !holds(target, content) {
+		return older, nil
 	}
 
 	return current, nil
+}
+
+// holds reports whether the package in dir holds content, and its
+// layout.json, without which MSFS loads none of its files.
+func holds(dir string, content map[string][]byte) bool {
+	_, err := os.Stat(filepath.Join(dir, "layout.json"))
+	if err != nil {
+		return false
+	}
+
+	for name, want := range content {
+		got, err := os.ReadFile(filepath.Join(dir, filepath.FromSlash(name)))
+		if err != nil || !bytes.Equal(got, want) {
+			return false
+		}
+	}
+
+	return true
 }
 
 func replace(community, target string, content map[string][]byte, version string) error {
@@ -337,37 +351,31 @@ func replace(community, target string, content map[string][]byte, version string
 
 	defer removePackage(tmp)
 
-	err = write(tmp, content, version)
+	// Only the package under its name ever has a manifest, which makes it
+	// one MSFS loads: what an install cut off at any point leaves beside
+	// it never is.
+	man, err := write(tmp, content, version)
 	if err != nil {
 		return err
 	}
 
-	// The old package goes aside first: a folder can't be renamed over
-	// another.
-	old := ""
-
-	_, err = os.Lstat(target)
-	if err == nil {
-		old = tmp + "-old"
-
-		err = os.Rename(target, old)
-		if err != nil {
-			return fmt.Errorf("replace %s (is MSFS running?): %w", target, err)
-		}
-
-		// Renamed, it keeps its time: another copy would take it for a
-		// leftover while it may still be put back.
-		now := time.Now()
-		_ = os.Chtimes(old, now, now)
+	old, oldMan, err := moveAside(target, tmp+"-old")
+	if err != nil {
+		return err
 	}
 
 	err = os.Rename(tmp, target)
-	if err != nil {
-		// Put back, or else no package: kept whole under its name, it
-		// would be loaded next to the one the next start installs.
-		if old != "" && os.Rename(old, target) != nil {
-			_ = os.Remove(filepath.Join(old, "manifest.json"))
+	if err == nil {
+		err = os.WriteFile(filepath.Join(target, manifestName), man, fileMode)
+		if err != nil {
+			// The new one goes back to tmp, which is removed, to make
+			// room for the old one.
+			_ = os.Rename(target, tmp)
 		}
+	}
+
+	if err != nil {
+		putBack(old, target, oldMan)
 
 		return fmt.Errorf("install %s: %w", target, err)
 	}
@@ -377,6 +385,65 @@ func replace(community, target string, content map[string][]byte, version string
 	}
 
 	return nil
+}
+
+// putBack moves the package at old, if any, back to target, with its
+// manifest; or else there is no package at all, rather than one beside
+// the next install.
+func putBack(old, target string, man []byte) {
+	if old != "" && os.Rename(old, target) == nil && man != nil {
+		_ = os.WriteFile(filepath.Join(target, manifestName), man, fileMode)
+	}
+}
+
+// moveAside moves the package at target, if any, to old: a folder can't be
+// renamed over another. It returns old, "" without a package, and the
+// manifest that setAside took.
+func moveAside(target, old string) (string, []byte, error) {
+	_, err := os.Lstat(target)
+	if err != nil {
+		return "", nil, nil //nolint:nilerr // nothing there to move
+	}
+
+	err = os.Rename(target, old)
+	if err != nil {
+		return "", nil, fmt.Errorf("replace %s (is MSFS running?): %w", target, err)
+	}
+
+	man, err := setAside(old)
+	if err != nil {
+		// Still a package: back where it was, or there would be two.
+		_ = os.Rename(old, target)
+
+		return "", nil, fmt.Errorf("replace %s (is MSFS running?): %w", target, err)
+	}
+
+	return old, man, nil
+}
+
+// setAside makes the package moved to old no package MSFS loads, and
+// returns its manifest, to put it back. Renamed, it keeps its time:
+// another copy would take it for a leftover while it may still go back.
+func setAside(old string) ([]byte, error) {
+	now := time.Now()
+	_ = os.Chtimes(old, now, now)
+
+	file := filepath.Join(old, manifestName)
+
+	man, err := os.ReadFile(file)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+
+	if err == nil {
+		err = os.Remove(file)
+	}
+
+	if err != nil {
+		return nil, fmt.Errorf("set aside: %w", err)
+	}
+
+	return man, nil
 }
 
 // manifest is MSFS's manifest.json of a package, in MSFS's names.
@@ -393,10 +460,25 @@ type manifest struct {
 	TotalPackageSize   string   `json:"total_package_size"`
 }
 
+// manifestName is the manifest's file name, pluginsXML that of the list of
+// the package's plugins, in package/html_ui/Plugins.
+const (
+	manifestName = "manifest.json"
+	pluginsXML   = "skydemon-connect.xml"
+)
+
+// hasPlugins reports whether dir holds SkyDemonConnect's plugin list, as
+// only its package does.
+func hasPlugins(dir string) bool {
+	info, err := os.Lstat(filepath.Join(dir, "html_ui", "Plugins", pluginsXML))
+
+	return err == nil && info.Mode().IsRegular()
+}
+
 func readManifest(dir string) (manifest, error) {
 	var man manifest
 
-	b, err := os.ReadFile(filepath.Join(dir, "manifest.json"))
+	b, err := os.ReadFile(filepath.Join(dir, manifestName))
 	if err != nil {
 		return man, fmt.Errorf("manifest: %w", err)
 	}
@@ -429,8 +511,9 @@ func fileTime(t time.Time) int64 {
 	return (t.Unix()-fileTimeEpoch)*ticksPerSecond + int64(t.Nanosecond())/nsPerTick
 }
 
-// write writes the package with content into dir.
-func write(dir string, content map[string][]byte, version string) error {
+// write writes the package with content into dir, but for its manifest,
+// which it returns.
+func write(dir string, content map[string][]byte, version string) ([]byte, error) {
 	now := fileTime(time.Now())
 	layout := struct {
 		Content []layoutEntry `json:"content"`
@@ -442,12 +525,12 @@ func write(dir string, content map[string][]byte, version string) error {
 
 		err := os.MkdirAll(filepath.Dir(p), dirMode)
 		if err != nil {
-			return fmt.Errorf("install: %w", err)
+			return nil, fmt.Errorf("install: %w", err)
 		}
 
 		err = os.WriteFile(p, b, fileMode)
 		if err != nil {
-			return fmt.Errorf("install: %w", err)
+			return nil, fmt.Errorf("install: %w", err)
 		}
 
 		layout.Content = append(layout.Content,
@@ -470,19 +553,21 @@ func write(dir string, content map[string][]byte, version string) error {
 		TotalPackageSize:   fmt.Sprintf("%020d", total),
 	}
 
-	for name, v := range map[string]any{"layout.json": layout, "manifest.json": man} {
-		b, err := json.MarshalIndent(v, "", "  ")
-		if err != nil {
-			return fmt.Errorf("install: %w", err)
-		}
-
-		err = os.WriteFile(filepath.Join(dir, name), append(b, '\n'), fileMode)
-		if err != nil {
-			return fmt.Errorf("install: %w", err)
-		}
+	b, err := json.MarshalIndent(layout, "", "  ")
+	if err == nil {
+		err = os.WriteFile(filepath.Join(dir, "layout.json"), append(b, '\n'), fileMode)
 	}
 
-	return nil
+	if err != nil {
+		return nil, fmt.Errorf("install: %w", err)
+	}
+
+	b, err = json.MarshalIndent(man, "", "  ")
+	if err != nil {
+		return nil, fmt.Errorf("install: %w", err)
+	}
+
+	return append(b, '\n'), nil
 }
 
 // packageVersion is version as MSFS wants it, three numbers: v0.2.0 is

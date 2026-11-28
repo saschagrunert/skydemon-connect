@@ -56,7 +56,7 @@ func TestAirportList(t *testing.T) {
 	var state airportState
 
 	// Before a request, nothing is taken.
-	if got := state.add(msgAirports(airportsRequestID, 0, 1, 12, liph)); got != nil {
+	if got := state.add(msgAirports(airportsRequestID, 0, 1, 12, liph), time.Now()); got != nil {
 		t.Fatalf("taken unasked: %+v", got)
 	}
 
@@ -70,18 +70,19 @@ func TestAirportList(t *testing.T) {
 		msgAirports(airportsRequestID, 0, 2, 12, eddp)[:listDataOffset-1],
 		msgAirports(airportsRequestID, 1, 2, 12, liph),
 	} {
-		if got := state.add(msg); got != nil {
+		if got := state.add(msg, time.Now()); got != nil {
 			t.Fatalf("list complete too early: %+v", got)
 		}
 	}
 
-	got := state.add(msgAirports(airportsRequestID, 0, 2, 12, eddp, edad))
+	got := state.add(msgAirports(airportsRequestID, 0, 2, 12, eddp, edad), time.Now())
 	if len(got) != 3 || got[0] != eddp || got[1] != edad || got[2] != liph {
 		t.Errorf("airports %+v", got)
 	}
 
 	// Once complete, a late duplicate changes nothing.
-	if again := state.add(msgAirports(airportsRequestID, 1, 2, 12, liph)); again != nil {
+	again := state.add(msgAirports(airportsRequestID, 1, 2, 12, liph), time.Now())
+	if again != nil {
 		t.Errorf("after the list %+v", again)
 	}
 }
@@ -95,9 +96,9 @@ func TestAirportListOtherOutOf(t *testing.T) {
 	var state airportState
 
 	state.ask(time.Now())
-	state.add(msgAirports(airportsRequestID, 0, 2, 12, eddp))
+	state.add(msgAirports(airportsRequestID, 0, 2, 12, eddp), time.Now())
 
-	if got := state.add(msgAirports(airportsRequestID, 0, 1, 12, liph)); got != nil {
+	if got := state.add(msgAirports(airportsRequestID, 0, 1, 12, liph), time.Now()); got != nil {
 		t.Errorf("mixed lists %+v", got)
 	}
 }
@@ -313,7 +314,84 @@ func TestAirportsLost(t *testing.T) {
 	}
 
 	_, eddp, _ := testAirports()
-	if state.add(msgAirports(airportsRequestID, 0, 1, 12, eddp)) != nil {
+	if state.add(msgAirports(airportsRequestID, 0, 1, 12, eddp), time.Now()) != nil {
 		t.Error("an earlier request's answer taken")
+	}
+}
+
+// The menu's requests all lost and the retries spent, a flight start lets
+// the one still out be asked again once it is lost.
+func TestAirportsAgainAfterRetries(t *testing.T) {
+	t.Parallel()
+
+	var state airportState
+
+	now := time.Now()
+	state.ask(now)
+
+	for range maxLostAirports {
+		now = now.Add(airportsLost)
+		state.retryLost(now)
+		state.ask(now)
+	}
+
+	now = now.Add(airportsLost)
+	state.retryLost(now)
+
+	if !state.asked {
+		t.Fatal("retried beyond the limit")
+	}
+
+	// The flight starts while the last request is out, but not lost yet.
+	state.ask(now)
+	state.again(now.Add(30 * time.Second))
+	state.retryLost(now.Add(airportsLost))
+
+	if state.asked {
+		t.Error("not asked again after the flight start")
+	}
+}
+
+// Packets coming slowly keep a request from counting as lost.
+func TestAirportsSlowAnswer(t *testing.T) {
+	t.Parallel()
+
+	eddp, _, _ := testAirports()
+
+	var state airportState
+
+	now := time.Now()
+	state.ask(now)
+	state.add(msgAirports(airportsRequestID, 0, 2, 12, eddp), now.Add(50*time.Second))
+
+	if state.isLost(now.Add(90 * time.Second)) {
+		t.Error("lost while its packets come")
+	}
+}
+
+// A short answer is asked again at a few flight starts, not at each.
+func TestAirportsShortLimit(t *testing.T) {
+	t.Parallel()
+
+	eddp, _, _ := testAirports()
+
+	var state airportState
+
+	now := time.Now()
+	asks := 0
+
+	for range maxShortAirports + 2 {
+		if !state.asked {
+			state.ask(now)
+			state.add(msgAirports(state.id, 0, 1, 12, eddp), now)
+
+			asks++
+		}
+
+		state.again(now)
+	}
+
+	if asks != maxShortAirports+1 {
+		t.Errorf("asked %d times", asks)
 	}
 }

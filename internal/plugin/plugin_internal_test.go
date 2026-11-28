@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -379,4 +380,124 @@ func TestPackageVersion(t *testing.T) {
 			t.Errorf("packageVersion(%q) = %q, want %q", in, got, want)
 		}
 	}
+}
+
+// Ours without its manifest, as an install cut off before writing it
+// leaves, is installed again, not taken for another package.
+func TestInstallWithoutManifest(t *testing.T) {
+	t.Parallel()
+
+	content, _, err := files()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, ok := content["html_ui/Plugins/"+pluginsXML]; !ok {
+		t.Fatalf("no %s among the package's files", pluginsXML)
+	}
+
+	user, community := msfs(t)
+	target := filepath.Join(community, Name)
+
+	if r := installOnce(t, user, "v1.0.0"); r.Err != nil || !r.Changed {
+		t.Fatalf("install %+v", r)
+	}
+
+	err = os.Remove(filepath.Join(target, manifestName))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if r := installOnce(t, user, "v1.0.0"); r.Err != nil || !r.Changed || r.Foreign {
+		t.Errorf("without its manifest %+v", r)
+	}
+
+	_, err = readManifest(target)
+	if err != nil {
+		t.Errorf("manifest not back: %v", err)
+	}
+}
+
+// A package set aside is none MSFS loads, its manifest kept to put back.
+func TestSetAside(t *testing.T) {
+	t.Parallel()
+
+	old := t.TempDir()
+
+	err := os.WriteFile(filepath.Join(old, manifestName), []byte(`{"creator":"x"}`), 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	man, err := setAside(old)
+	if err != nil || string(man) != `{"creator":"x"}` {
+		t.Errorf("manifest %q, %v", man, err)
+	}
+
+	_, err = os.Stat(filepath.Join(old, manifestName))
+	if !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("manifest still there: %v", err)
+	}
+
+	man, err = setAside(t.TempDir())
+	if err != nil || man != nil {
+		t.Errorf("manifest from nowhere %q, %v", man, err)
+	}
+}
+
+// A package whose manifest can't be taken away is put back, not left as a
+// second package beside the new one.
+func TestMoveAsideStuck(t *testing.T) {
+	t.Parallel()
+
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("needs a folder that can't be written to")
+	}
+
+	user, community := msfs(t)
+	target := filepath.Join(community, Name)
+
+	if r := installOnce(t, user, "v1.0.0"); r.Err != nil {
+		t.Fatal(r.Err)
+	}
+
+	// Its manifest can't be removed from it.
+	err := os.Chmod(target, 0o500) //nolint:gosec // a folder: read and list only
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Cleanup(func() { _ = os.Chmod(target, 0o700) }) //nolint:gosec // a folder, as it was
+
+	old, man, err := moveAside(target, target+"-old")
+	if err == nil || old != "" || man != nil {
+		t.Errorf("moved aside: %q, %q, %v", old, man, err)
+	}
+
+	_, err = readManifest(target)
+	if err != nil {
+		t.Errorf("not back with its manifest: %v", err)
+	}
+}
+
+// putBack brings the old package back with its manifest.
+func TestPutBack(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	old, target := filepath.Join(dir, "old"), filepath.Join(dir, "target")
+
+	err := os.Mkdir(old, 0o700)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	putBack(old, target, []byte(`{"creator":"SkyDemonConnect"}`))
+
+	m, err := readManifest(target)
+	if err != nil || m.Creator != creator {
+		t.Errorf("manifest %+v, %v", m, err)
+	}
+
+	putBack("", target, nil) // nothing to put back: no panic, no change
 }
